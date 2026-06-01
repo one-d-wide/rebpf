@@ -1,0 +1,11 @@
+[package]
+name = "message"
+edition.workspace = true
+
+[lib]
+path = "message.rs"
+
+[dependencies]
+iced.workspace = true
+tokio.workspace = true
+zbus.workspace = true

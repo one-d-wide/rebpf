@@ -1,0 +1,9 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Rebpf
+Comment=Ebpf-based per-program network packet redirection
+Exec=rebpf-gui
+Icon=rebpf-gui
+Terminal=false
+Categories=Utility;

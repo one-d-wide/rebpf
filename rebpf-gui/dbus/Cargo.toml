@@ -1,0 +1,9 @@
+[package]
+name = "dbus"
+edition.workspace = true
+
+[lib]
+path = "dbus.rs"
+
+[dependencies]
+zbus.workspace = true

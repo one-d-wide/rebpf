@@ -1,0 +1,23 @@
+{
+  "nodes": {
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 0,
+        "narHash": "sha256-0000000000000000000000000000000000000000000=",
+        "path": "/nix/store/fake/path\n\nYou should explicitly provide a version of nixpkgs for this project to use.\n\nFrom CLI:\n\n  nix shell --override-input nixpkgs nixpkgs [...]\n  nix develop --override-input nixpkgs nixpkgs [...]\n\nFrom flake.nix:\n\n  this_project = {\n    url = \"...\";\n    inputs.nixpkgs.follows = \"nixpkgs\";\n  };\n\n",
+        "type": "path"
+      },
+      "original": {
+        "id": "nixpkgs",
+        "type": "indirect"
+      }
+    },
+    "root": {
+      "inputs": {
+        "nixpkgs": "nixpkgs"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}

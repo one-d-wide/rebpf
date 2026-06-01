@@ -1,0 +1,22 @@
+[package]
+name = "rebpf-gui"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "rebpf-gui"
+path = "main.rs"
+
+[dependencies]
+iced.workspace = true
+zbus.workspace = true
+tokio.workspace = true
+log.workspace = true
+env_logger.workspace = true
+argh.workspace = true
+
+message.workspace = true
+widgets.workspace = true
+gui.workspace = true
+dbus.workspace = true
+tray.workspace = true

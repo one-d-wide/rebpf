@@ -1,0 +1,11 @@
+[package]
+name = "icons"
+edition.workspace = true
+
+[lib]
+path = "icons.rs"
+
+[dependencies]
+message.workspace = true
+
+iced.workspace = true

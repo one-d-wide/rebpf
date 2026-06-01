@@ -1,0 +1,33 @@
+[workspace]
+resolver = "3"
+members = [
+  "rebpf",
+  "rebpf-gui",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[profile.dev]
+debug = false # binary size...
+
+[workspace.dependencies]
+dbus.path = "./rebpf-gui/dbus"
+gui.path = "./rebpf-gui/gui"
+icons.path = "./rebpf-gui/icons"
+message.path = "./rebpf-gui/message"
+tray.path = "./rebpf-gui/tray"
+widgets.path = "./rebpf-gui/widgets"
+
+iced = { version = "0", default-features = false, features = [ "wayland", "x11", "tokio", "tiny-skia", "advanced", "selector", "svg" ] }
+iced_core = { version = "*", default-features = false }
+iced_widget = { version = "*", default-features = false }
+iced_aw = { version = "0.13.0", features = [ "labeled_frame", "card" ] }
+zbus = { version = "5", default-features = false, features = [ "tokio", "async-io" ] }
+tokio = { version = "*", default-features = false, features = [ "macros" ] }
+serde = { version = "1", features = ["derive"] }
+env_logger = { version = "0", default-features = false, features = ["auto-color"] }
+argh = { version = "0", default-features = false, features = ["help" ] }
+log = "*"
+libc = "*"

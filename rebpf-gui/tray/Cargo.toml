@@ -1,0 +1,15 @@
+[package]
+name = "tray"
+edition.workspace = true
+
+[lib]
+path = "tray.rs"
+
+[dependencies]
+zbus.workspace = true
+serde.workspace = true
+log.workspace = true
+
+dbus.workspace = true
+icons.workspace = true
+message.workspace = true
