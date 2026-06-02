@@ -26,17 +26,17 @@ pub async fn tray(m_tx: Tx<M>, d_tx: Tx<D>, mut t_rx: Rx<TrayState>) -> zbus::Re
 
     let conn = zbus::connection::Builder::session()?
         .serve_at(
-            item,
-            Item {
-                m_tx: m_tx.clone(),
-                state: state.clone(),
-            },
-        )?
-        .serve_at(
             menu,
             Menu {
                 m_tx: m_tx.clone(),
                 d_tx: d_tx.clone(),
+            },
+        )?
+        .serve_at(
+            item,
+            Item {
+                m_tx: m_tx.clone(),
+                state: state.clone(),
             },
         )?
         .build()
@@ -102,64 +102,13 @@ impl Item {
         self.m_tx.unbounded_send(M::WindowToggle).unwrap();
     }
 
-    // /// ContextMenu method
-    // fn context_menu(&self, x: i32, y: i32) {
-    //     todo!()
-    // }
-    //
-    // /// Scroll method
-    // fn scroll(&self, delta: i32, orientation: &str) {
-    //     todo!()
-    // }
-    //
-    // /// SecondaryActivate method
-    // fn secondary_activate(&self, x: i32, y: i32) {
-    //     todo!()
-    // }
-    //
-    // /// NewAttentionIcon signal
-    // #[zbus(signal)]
-    // async fn new_attention_icon(&self) {
-    //     todo!()
-    // }
-
     /// NewIcon signal
     #[zbus(signal)]
     async fn new_icon(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
 
-    // /// NewOverlayIcon signal
-    // #[zbus(signal)]
-    // async fn new_overlay_icon(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
-    //
-    // /// NewStatus signal
-    // #[zbus(signal)]
-    // async fn new_status(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
-    //
-    // /// NewTitle signal
-    // #[zbus(signal)]
-    // async fn new_title(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
-    //
-    // /// NewToolTip signal
-    // #[zbus(signal)]
-    // async fn new_tool_tip(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
-    //
-    // /// AttentionIconName property
-    // #[zbus(property)]
-    // fn attention_icon_name(&self) -> String {
-    //     todo!()
-    // }
-    //
-    // /// AttentionIconPixmap property
-    // #[zbus(property)]
-    // fn attention_icon_pixmap(&self) -> Vec<(i32, i32, Vec<u8>)> {
-    //     todo!()
-    // }
-    //
-    // /// AttentionMovieName property
-    // #[zbus(property)]
-    // fn attention_movie_name(&self) -> String {
-    //     todo!()
-    // }
+    /// NewToolTip signal
+    #[zbus(signal)]
+    async fn new_tool_tip(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
 
     /// Category property
     #[zbus(property)]
@@ -180,23 +129,17 @@ impl Item {
         vec![(128, 128, icons::tray_argb(s.state, s.theme))]
     }
 
-    // /// IconThemePath property
-    // #[zbus(property)]
-    // fn icon_theme_path(&self) -> String {
-    //     todo!()
-    // }
-
     /// Id property
     #[zbus(property)]
     fn id(&self) -> &str {
         NAME
     }
 
-    // /// ItemIsMenu property
-    // #[zbus(property)]
-    // fn item_is_menu(&self) -> bool {
-    //     todo!()
-    // }
+    /// ItemIsMenu property
+    #[zbus(property)]
+    fn item_is_menu(&self) -> bool {
+        false
+    }
 
     /// Menu property
     #[zbus(property)]
@@ -253,6 +196,12 @@ pub(crate) struct SubMenuLayout {
     pub submenus: Vec<Value<'static>>,
 }
 
+#[derive(Serialize, Type, PartialEq, Debug, Default)]
+pub(crate) struct SimpleMenuItem {
+    pub id: i32,
+    pub fields: HashMap<String, Value<'static>>,
+}
+
 #[allow(dead_code)]
 type GroupProperties = Vec<(i32, HashMap<String, zbus::zvariant::OwnedValue>)>;
 
@@ -277,9 +226,47 @@ pub struct RemovedProps<'a> {
     pub(crate) fields: Vec<&'a str>,
 }
 
+impl Menu {
+    fn simple_menu_layout(&self) -> Vec<SimpleMenuItem> {
+        vec![
+            SimpleMenuItem {
+                id: 2,
+                fields: [
+                    ("enabled".to_string(), Value::new(true)),
+                    ("label".to_string(), Value::new("Enable")),
+                    ("visible".to_string(), Value::new(true)),
+                ]
+                .into_iter()
+                .collect::<HashMap<String, Value<'static>>>(),
+            },
+            SimpleMenuItem {
+                id: 3,
+                fields: [
+                    ("enabled".to_string(), Value::new(true)),
+                    ("label".to_string(), Value::new("Disable")),
+                    ("visible".to_string(), Value::new(true)),
+                ]
+                .into_iter()
+                .collect::<HashMap<String, Value<'static>>>(),
+            },
+            SimpleMenuItem {
+                id: 4,
+                fields: [
+                    ("enabled".to_string(), Value::new(true)),
+                    ("label".to_string(), Value::new(format!("Quit {NAME}"))),
+                    ("visible".to_string(), Value::new(true)),
+                ]
+                .into_iter()
+                .collect::<HashMap<String, Value<'static>>>(),
+            },
+        ]
+    }
+}
+
 #[interface(interface = "com.canonical.dbusmenu")]
 impl Menu {
-    fn event(&self, id: i32, event_id: &str, _data: OwnedValue, _timestamp: u32) {
+    /// Event method
+    fn event(&self, id: i32, event_id: String, _data: OwnedValue, _timestamp: u32) {
         if event_id == "clicked" {
             match id {
                 2 => self.d_tx.unbounded_send(D::Enable).unwrap(),
@@ -290,6 +277,28 @@ impl Menu {
         }
     }
 
+    /// EventGroup method
+    fn event_group(&self, events: Vec<(i32, String, OwnedValue, u32)>) -> Vec<i32> {
+        for (id, ev_id, data, timestamp) in events {
+            self.event(id, ev_id, data, timestamp);
+        }
+        vec![]
+    }
+
+    /// GetGroupProperties method
+    fn get_group_properties(
+        &self,
+        ids: Vec<i32>,
+        _property_names: Vec<String>,
+    ) -> Vec<(i32, HashMap<String, Value<'static>>)> {
+        self.simple_menu_layout()
+            .into_iter()
+            .filter(|s| ids.contains(&s.id))
+            .map(|s| (s.id, s.fields))
+            .collect()
+    }
+
+    /// GetLayout method
     fn get_layout(
         &self,
         parent_id: i32,
@@ -298,76 +307,39 @@ impl Menu {
     ) -> MenuLayout {
         if parent_id != 0 {
             return MenuLayout {
-                id: 10,
+                id: 1,
                 fields: SubMenuLayout {
-                    id: 11,
+                    id: parent_id,
                     ..Default::default()
                 },
             };
         }
 
         MenuLayout {
-            id: 0,
+            id: 1,
             fields: SubMenuLayout {
-                id: 1,
-                fields: [("children-display".to_string(), Value::new("submenu"))]
+                id: 0,
+                fields: [(format!("children-display"), Value::new("submenu"))]
                     .into_iter()
                     .collect(),
-                submenus: vec![
-                    Value::new((
-                        2, // id
-                        [
-                            ("enabled".to_string(), Value::new(true)),
-                            ("label".to_string(), Value::new(format!("Enable"))),
-                            ("visible".to_string(), Value::new("true")),
-                        ]
-                        .into_iter()
-                        .collect::<HashMap<String, Value<'static>>>(),
-                        <Vec<OwnedValue>>::default(),
-                    )),
-                    Value::new((
-                        3, // id
-                        [
-                            ("enabled".to_string(), Value::new(true)),
-                            ("label".to_string(), Value::new(format!("Disable"))),
-                            ("visible".to_string(), Value::new("true")),
-                        ]
-                        .into_iter()
-                        .collect::<HashMap<String, Value<'static>>>(),
-                        <Vec<OwnedValue>>::default(),
-                    )),
-                    Value::new((
-                        4, // id
-                        [
-                            ("enabled".to_string(), Value::new(true)),
-                            ("label".to_string(), Value::new(format!("Quit {NAME}"))),
-                            ("visible".to_string(), Value::new("true")),
-                        ]
-                        .into_iter()
-                        .collect::<HashMap<String, Value<'static>>>(),
-                        <Vec<OwnedValue>>::default(),
-                    )),
-                ],
+                submenus: self
+                    .simple_menu_layout()
+                    .into_iter()
+                    .map(|s| Value::new((s.id, s.fields, <Vec<OwnedValue>>::default())))
+                    .collect(),
             },
         }
     }
 
-    // #[zbus(signal)]
-    // fn item_activation_requested(&self, id: i32, timestamp: u32) -> zbus::Result<()>;
-    //
-    // #[zbus(signal)]
-    // fn items_properties_updated(
-    //     &self,
-    //     updated_props: Vec<(i32, HashMap<&str, Value<'_>>)>,
-    //     removed_props: Vec<(i32, Vec<&str>)>,
-    // ) -> zbus::Result<()>;
-    //
-    // #[zbus(signal)]
-    // fn layout_updated(&self, revision: u32, parent: i32) -> zbus::Result<()>;
-
     #[zbus(property)]
     fn status(&self) -> &'static str {
         "normal"
+    }
+
+    /// TextDirection property
+    #[zbus(property)]
+    fn text_direction(&self) -> String {
+        "ltr".into()
     }
 
     #[zbus(property)]
