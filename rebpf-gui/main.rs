@@ -20,6 +20,9 @@ static mut RX_T: Option<Rx<TrayState>> = None;
 /// Per-process network traffic redirection using eBPF.
 #[argh(help_triggers("-h", "--help"))]
 struct CliArgs {
+    /// start in tray
+    #[argh(switch)]
+    tray: bool,
     /// verbose output, same as RUST_LOG=info
     #[argh(switch)]
     verbose: bool,
@@ -71,7 +74,9 @@ fn main() -> iced::Result {
         {
             let m_tx = m_tx.clone();
             move || {
-                m_tx.unbounded_send(M::WindowOpen).unwrap();
+                if !args.tray {
+                    m_tx.unbounded_send(M::WindowOpen).unwrap();
+                }
                 (
                     {
                         gui::State {
