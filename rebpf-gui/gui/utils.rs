@@ -1,6 +1,6 @@
 use iced::{advanced::widget::operation::Operation, widget};
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, BTreeSet},
     ffi::CStr,
     os::unix::ffi::OsStrExt,
 };
@@ -40,8 +40,8 @@ pub fn procs_all_with(
     res
 }
 
-pub fn ifnames() -> HashSet<String> {
-    let mut h = HashSet::new();
+pub fn ifnames() -> BTreeSet<String> {
+    let mut h = BTreeSet::new();
     unsafe {
         let mut first: *mut libc::ifaddrs = std::mem::zeroed();
         if libc::getifaddrs(&mut first as *mut *mut libc::ifaddrs) != 0 {

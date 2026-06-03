@@ -29,5 +29,6 @@ tokio = { version = "*", default-features = false, features = [ "macros" ] }
 serde = { version = "1", features = ["derive"] }
 env_logger = { version = "0", default-features = false, features = ["auto-color"] }
 argh = { version = "0", default-features = false, features = ["help" ] }
+rust-fuzzy-search = "0"
 log = "*"
 libc = "*"

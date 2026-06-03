@@ -14,6 +14,7 @@ zbus.workspace = true
 tokio.workspace = true
 log.workspace = true
 libc.workspace = true
+rust-fuzzy-search.workspace = true
 
 message.workspace = true
 widgets.workspace = true

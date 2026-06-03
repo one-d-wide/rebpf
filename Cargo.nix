@@ -3548,6 +3548,10 @@ rec {
             packageId = "message";
           }
           {
+            name = "rust-fuzzy-search";
+            packageId = "rust-fuzzy-search";
+          }
+          {
             name = "tokio";
             packageId = "tokio";
             usesDefaultFeatures = false;
@@ -9167,6 +9171,18 @@ rec {
           "default" = [ "std" "positions" ];
         };
         resolvedDefaultFeatures = [ "default" "positions" "std" ];
+      };
+      "rust-fuzzy-search" = rec {
+        crateName = "rust-fuzzy-search";
+        version = "0.1.1";
+        edition = "2018";
+        crateBin = [];
+        sha256 = "1chvl47hq42r219yxs6r1dp4l19acy5ay145hpc5drgzaiq6amx1";
+        libName = "rust_fuzzy_search";
+        authors = [
+          "EnricoCh <enricochiaramello@gmail.com>"
+        ];
+
       };
       "rustc-hash 1.1.0" = rec {
         crateName = "rustc-hash";

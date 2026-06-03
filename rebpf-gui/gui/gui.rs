@@ -57,6 +57,13 @@ pub struct State {
     pub settings: Settings,
     pub settings_override: Settings,
     pub show_settings: bool,
+
+    pub output_dev_input_id: UniqueId,
+    pub output_dev_input_focus: bool,
+    pub output_dev_input: String,
+    pub output_dev_input_sent: bool,
+    pub output_dev_popup_focus: bool,
+
     pub proc_input_id: UniqueId,
     pub proc_input_focus: bool,
     pub proc_input: String,
@@ -66,8 +73,6 @@ pub struct State {
     pub proc_input_default_dir: &'static str,
     pub proc_input_kind: &'static str,
     pub proc_input_kind_after_refine: bool,
-    pub to_ifname_override_sent: bool,
-    pub to_ifname_override: String,
     pub attached: Attached,
     pub stats: Stats,
     pub matches: Vec<(Match, Id)>,
@@ -265,24 +270,45 @@ pub fn update(s: &mut State, message: M) -> Task<M> {
                 refresh_procs_all(s);
             }
         }
-        M::SubmitOutputDev
-            if !s.to_ifname_override_sent && s.to_ifname_override != s.attached.to_ifname =>
-        {
-            s.to_ifname_override_sent = true;
-            s.d_tx
-                .as_ref()
-                .unwrap()
-                .unbounded_send(D::ChangeOutput(s.to_ifname_override.clone()))
-                .unwrap();
+
+        M::OutputDevClick => s.output_dev_input_focus = true,
+        M::OutputDevFocus => s.output_dev_input_focus |= s.output_dev_popup_focus,
+        M::OutputDevUnfocus if s.output_dev_popup_focus => s.output_dev_input_focus = false,
+        M::OutputDevUnfocus => return update(s, M::OutputDevSubmit),
+        M::OutputDevPopupFocus => s.output_dev_popup_focus = true,
+        M::OutputDevPopupUnfocus if s.output_dev_input_focus => s.output_dev_popup_focus = false,
+        M::OutputDevPopupUnfocus => return update(s, M::OutputDevSubmit),
+        M::OutputDevSetSubmit(n) => {
+            return Task::none()
+                .chain(update(s, M::OutputDevSet(n)))
+                .chain(update(s, M::OutputDevSubmit));
         }
-        M::OutputDev(n) if n != s.to_ifname_override => {
-            s.to_ifname_override_sent = false;
-            s.to_ifname_override = n;
+        M::OutputDevSet(n) => {
+            s.output_dev_input_sent = s.attached.to_ifname == n;
+            s.output_dev_input = n;
         }
+        M::OutputDevSubmit => {
+            s.output_dev_input_focus = false;
+            s.output_dev_popup_focus = false;
+
+            if !s.output_dev_input_sent && s.output_dev_input != s.attached.to_ifname {
+                s.output_dev_input_sent = true;
+                s.d_tx
+                    .as_ref()
+                    .unwrap()
+                    .unbounded_send(D::ChangeOutput(s.output_dev_input.clone()))
+                    .unwrap();
+            }
+
+            return iced::advanced::widget::operate(utils::DoUnfocus(
+                s.output_dev_input_id.0.clone(),
+            ));
+        }
+
         M::Attached(n) => {
             s.attached = n;
-            s.to_ifname_override_sent = false;
-            s.to_ifname_override = s.attached.to_ifname.clone();
+            s.output_dev_input = s.attached.to_ifname.clone();
+            s.output_dev_input_sent = true;
             s.t_tx
                 .as_ref()
                 .unwrap()
@@ -335,8 +361,8 @@ pub fn update(s: &mut State, message: M) -> Task<M> {
         M::DbusErr(err) => {
             // Rollback pending configuration changes
             s.settings_override = s.settings.clone();
-            s.to_ifname_override = s.attached.to_ifname.clone();
-            s.to_ifname_override_sent = false;
+            s.output_dev_input = s.attached.to_ifname.clone();
+            s.output_dev_input_sent = true;
             s.matches_override.clear();
 
             s.dbus_errs.push_back(err);
@@ -442,30 +468,88 @@ pub fn view(s: &State, _window: window::Id) -> Element<'_, M> {
     .width(Fill)
     .height(Shrink);
 
-    let dev_output = labeled_frame::LabeledFrame::new(
+    let button_style = |t: &Theme, s: button::Status| {
+        let mut p = button::primary(t, s);
+        p.border.color = t.extended_palette().background.weak.color;
+        p.border.width = 1.0;
+        p.border.radius = S.into();
+        p.background = match s {
+            button::Status::Active | button::Status::Disabled => None,
+            _ => p.background.map(|c| c.scale_alpha(0.3)),
+        };
+        p
+    };
+
+    let pick_width = 120;
+
+    let output_dev = container_hook::Container::new(
+        text_input(LOADING, &s.output_dev_input)
+            .id(s.output_dev_input_id.0.clone())
+            .width(Length::FillPortion(2))
+            .on_input(M::OutputDevSet)
+            .on_submit(M::OutputDevSubmit)
+            .style({
+                let found = utils::ifnames().contains(&s.output_dev_input);
+                move |t, state| {
+                    let mut style = text_input_style(t, state);
+                    if !found {
+                        style.border.color = t.palette().warning;
+                    }
+                    style
+                }
+            }),
+    )
+    .gutter(S)
+    .on_click(M::OutputDevClick)
+    .on_hover(M::OutputDevFocus)
+    .on_leave(M::OutputDevUnfocus);
+
+    let mut output_devs_overlay = column!().spacing(S);
+    let output_devs_overlay_show = s.output_dev_popup_focus || s.output_dev_input_focus;
+    if output_devs_overlay_show {
+        let output_devs_all = utils::ifnames();
+        let output_devs_all = output_devs_all
+            .iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<&str>>();
+        let output_devs_sorted =
+            rust_fuzzy_search::fuzzy_search_sorted(&s.output_dev_input, &output_devs_all);
+        for (ifname, _) in output_devs_sorted {
+            output_devs_overlay = output_devs_overlay.push(
+                button(text(ifname.to_string()))
+                    .on_press(M::OutputDevSetSubmit(ifname.to_string()))
+                    .style(button_style)
+                    .width(Length::Fill),
+            );
+        }
+        if output_devs_all.is_empty() {
+            output_devs_overlay = output_devs_overlay.push(
+                button(text("Nothing matched").align_x(Horizontal::Center))
+                    .style(button_style)
+                    .width(Length::Fill),
+            );
+        }
+    }
+
+    let output_devs_overlay = container_hook::Container::new(container(
+        container(scrollable(container(output_devs_overlay).padding(S)))
+            .style(container::rounded_box),
+    ))
+    .on_hover(M::OutputDevPopupFocus)
+    .on_leave(M::OutputDevPopupUnfocus);
+
+    let output_devs_search =
+        DropDown::new(output_dev, output_devs_overlay, output_devs_overlay_show)
+            .on_dismiss(M::ModalDismiss)
+            .alignment(drop_down::Alignment::Bottom);
+
+    let output_dev = labeled_frame::LabeledFrame::new(
         text("Output"),
         column![
             row![
                 row![
                     text("Interface").width(Length::FillPortion(1)),
-                    container_hook::Container::new(
-                        text_input(LOADING, &s.to_ifname_override)
-                            .width(Length::FillPortion(2))
-                            .on_input(M::OutputDev)
-                            .on_submit(M::SubmitOutputDev)
-                            .style({
-                                let found = utils::ifnames().contains(&s.to_ifname_override);
-                                move |t, state| {
-                                    let mut style = text_input_style(t, state);
-                                    if !found {
-                                        style.border.color = t.palette().warning;
-                                    }
-                                    style
-                                }
-                            }),
-                    )
-                    .gutter(S)
-                    .on_leave(M::SubmitOutputDev),
+                    output_devs_search,
                 ]
                 .align_y(Vertical::Center)
                 .spacing(S),
@@ -522,20 +606,6 @@ pub fn view(s: &State, _window: window::Id) -> Element<'_, M> {
         .on_link_click(iced::never)
     };
 
-    let button_style = |t: &Theme, s: button::Status| {
-        let mut p = button::primary(t, s);
-        p.border.color = t.extended_palette().background.weak.color;
-        p.border.width = 1.0;
-        p.border.radius = S.into();
-        p.background = match s {
-            button::Status::Active | button::Status::Disabled => None,
-            _ => p.background.map(|c| c.scale_alpha(0.3)),
-        };
-        p
-    };
-
-    let pick_width = 120;
-
     let search = row![
         button(text("+").font(MONO_BOLD).size(22))
             .padding([2, 14])
@@ -567,13 +637,14 @@ pub fn view(s: &State, _window: window::Id) -> Element<'_, M> {
     .width(Fill)
     .height(Shrink);
 
-    let show_overlay = (s.proc_popup_focus || s.proc_input_focus) && !s.proc_input.is_empty();
-    let mut overlay = column!().spacing(S);
+    let search_overlay_show =
+        (s.proc_popup_focus || s.proc_input_focus) && !s.proc_input.is_empty();
+    let mut search_overlay = column!().spacing(S);
 
-    if show_overlay {
+    if search_overlay_show {
         let procs_all = s.procs_all.as_ref().unwrap();
         for (i, (c, num)) in procs_all.iter().enumerate() {
-            overlay = overlay.push(
+            search_overlay = search_overlay.push(
                 button(text(format!("{c} ({num})")))
                     .on_press(M::MatchFromProc(s.matches_gen, i))
                     .style(button_style)
@@ -581,14 +652,14 @@ pub fn view(s: &State, _window: window::Id) -> Element<'_, M> {
             );
         }
         if !procs_all.is_empty() && s.procs_all_max == procs_all.len() {
-            overlay = overlay.push(
+            search_overlay = search_overlay.push(
                 button(text(LOADING).align_x(Horizontal::Center))
                     .style(button_style)
                     .width(Length::Fill),
             );
         }
         if procs_all.is_empty() {
-            overlay = overlay.push(
+            search_overlay = search_overlay.push(
                 button(text("Nothing matched").align_x(Horizontal::Center))
                     .style(button_style)
                     .width(Length::Fill),
@@ -596,9 +667,10 @@ pub fn view(s: &State, _window: window::Id) -> Element<'_, M> {
         }
     }
 
-    let overlay = container_hook::Container::new(
+    let search_overlay = container_hook::Container::new(
         container(
-            container(scrollable(container(overlay).padding(S))).style(container::rounded_box),
+            container(scrollable(container(search_overlay).padding(S)))
+                .style(container::rounded_box),
         )
         .padding(Padding::new(S * 4.0).top(0.0)),
     )
@@ -606,7 +678,7 @@ pub fn view(s: &State, _window: window::Id) -> Element<'_, M> {
     .on_hover(M::ProcPopupFocus)
     .on_leave(M::ProcPopupUnfocus);
 
-    let search = DropDown::new(search, overlay, show_overlay)
+    let search = DropDown::new(search, search_overlay, search_overlay_show)
         .width(Length::Fill)
         .on_dismiss(M::ModalDismiss)
         .alignment(drop_down::Alignment::Bottom);
@@ -761,7 +833,7 @@ pub fn view(s: &State, _window: window::Id) -> Element<'_, M> {
 
     let content = column![
         bar,
-        row![dev_input, dev_output].spacing(S),
+        row![dev_input, output_dev].spacing(S),
         space::vertical().height(S),
         patterns
     ];
