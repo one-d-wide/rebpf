@@ -40,13 +40,13 @@ const char *MATCH_KIND_STRINGS[] = {
 enum MatchDir : u8 {
   MATCH_DIR_INVAL,
   MATCH_DIR_REDIRECT,
-  MATCH_DIR_ALLOW,
+  MATCH_DIR_BYPASS,
 };
 
 const char *MATCH_DIR_STRINGS[] = {
     "invalid",
     "redirect",
-    "allow",
+    "bypass",
     NULL,
 };
 

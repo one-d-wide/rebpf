@@ -111,7 +111,7 @@ pub async fn watch_reload(ctx: &'static Ctx) -> eyre::Result<()> {
                     },
                     dir: match m.direction {
                         Direction::redirect => D::MATCH_DIR_REDIRECT,
-                        Direction::allow => D::MATCH_DIR_ALLOW,
+                        Direction::bypass => D::MATCH_DIR_BYPASS,
                     },
                     pat: {
                         let ptr = cstrings.as_ptr().wrapping_add(cstrings.len());

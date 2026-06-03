@@ -221,7 +221,7 @@ unsafe extern "C" {
 pub enum MatchDir {
     MATCH_DIR_INVAL = 0,
     MATCH_DIR_REDIRECT = 1,
-    MATCH_DIR_ALLOW = 2,
+    MATCH_DIR_BYPASS = 2,
 }
 unsafe extern "C" {
     pub static mut MATCH_DIR_STRINGS: [*const ::std::os::raw::c_char; 4usize];

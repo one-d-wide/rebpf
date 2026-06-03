@@ -85,7 +85,7 @@ fn main() -> iced::Result {
                             t_tx: Some(t_tx.clone()),
                             proc_input_kind: gui::KIND_DEFAULT,
                             proc_input_dir: "redirect",
-                            proc_input_default_dir: "allow",
+                            proc_input_default_dir: "bypass",
                             ..Default::default()
                         }
                     },

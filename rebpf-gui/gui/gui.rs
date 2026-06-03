@@ -212,8 +212,8 @@ pub fn update(s: &mut State, message: M) -> Task<M> {
         }
         M::MatchDir => {
             s.proc_input_dir = match s.proc_input_dir {
-                "redirect" => "allow",
-                "allow" => "redirect",
+                "redirect" => "bypass",
+                "bypass" => "redirect",
                 _ => unreachable!(),
             };
         }
@@ -223,8 +223,8 @@ pub fn update(s: &mut State, message: M) -> Task<M> {
                 .entry(i)
                 .or_insert_with(|| s.matches[i].0.clone());
             m.direction = match m.direction.as_str() {
-                "redirect" => "allow",
-                "allow" => "redirect",
+                "redirect" => "bypass",
+                "bypass" => "redirect",
                 _ => "redirect",
             }
             .to_string();
@@ -499,7 +499,7 @@ pub fn view(s: &State, _window: window::Id) -> Element<'_, M> {
     fn dir(d: &str) -> &'static str {
         match d {
             "redirect" => "R",
-            "allow" => "A",
+            "bypass" => "B",
             _ => "R",
         }
     }
@@ -508,7 +508,7 @@ pub fn view(s: &State, _window: window::Id) -> Element<'_, M> {
         let mut fonts = [Font::default(); 2];
         let i = match cur {
             "redirect" => 0,
-            "allow" => 1,
+            "bypass" => 1,
             _ => 0,
         };
         fonts[i] = SEMIBOLD;
@@ -516,8 +516,8 @@ pub fn view(s: &State, _window: window::Id) -> Element<'_, M> {
         rich_text([
             span("R:").font(MONO),
             span(" Redirect\n").font(fonts[0]),
-            span("A:").font(MONO),
-            span(" Allow\n").font(fonts[1]),
+            span("B:").font(MONO),
+            span(" Bypass\n").font(fonts[1]),
         ])
         .on_link_click(iced::never)
     };

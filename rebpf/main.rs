@@ -289,7 +289,7 @@ to_from_enum! {
     enum Direction {
         #[default]
         redirect,
-        allow,
+        bypass,
     }
 }
 
