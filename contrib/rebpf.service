@@ -1,0 +1,9 @@
+[Unit]
+Description=Per-process network traffic redirection using eBPF
+
+[Service]
+BusName=service.rebpf
+ExecStart=/bin/rebpf
+
+[Install]
+WantedBy=network.target

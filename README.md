@@ -171,7 +171,8 @@ configuration when needed.
   # Rebpf
   install -m 0755 -Dt /usr/bin ./target/release/rebpf
   install -m 0644 -Dt /etc/dbus-1/system.d/ ./contrib/service.rebpf.conf
-  install -m 0644 -Dt /usr/share/polkit-1/actions/ ./contrib/service.rebpf.policy 
+  install -m 0644 -Dt /usr/share/polkit-1/actions/ ./contrib/service.rebpf.policy
+  install -m 0644 -Dt /etc/systemd/system ./contrib/rebpf.service
 
   # Rebpf-gui
   install -m 0755 -Dt /usr/bin ./target/release/rebpf-gui
