@@ -103,6 +103,12 @@ struct Ctx {
 /// Per-process network traffic redirection using eBPF.
 #[argh(help_triggers("-h", "--help"))]
 struct CliArgs {
+    /// start enabled
+    #[argh(switch)]
+    enable: bool,
+    /// start disabled
+    #[argh(switch)]
+    disable: bool,
     /// state directory
     #[argh(option)]
     state_dir: Option<PathBuf>,
@@ -158,10 +164,11 @@ fn main() -> eyre::Result<()> {
         .enable_all()
         .build()
         .expect("Failed building the Runtime")
-        .block_on(run(files, conn))
+        .block_on(run(args, files, conn))
 }
 
 async fn run(
+    args: CliArgs,
     mut files: Vec<(PathBuf, File)>,
     conn: zbus::blocking::Connection,
 ) -> eyre::Result<()> {
@@ -204,6 +211,13 @@ async fn run(
         rx.mark_unchanged();
         save_state_handle = Some(tokio::spawn(save_state(rx, files, last_i)));
     };
+
+    if args.enable && args.disable {
+        bail!("Can't simultaneously set --enable and --disable");
+    }
+    if (args.enable || args.disable) && state.rx.borrow().enable != args.enable {
+        state.tx.send_modify(|s| s.enable = args.enable);
+    }
 
     let ctx = Ctx {
         conn: Box::leak(Box::new(conn)),
