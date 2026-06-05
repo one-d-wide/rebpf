@@ -1,5 +1,5 @@
 use argh::FromArgs;
-use eyre::bail;
+use eyre::{Context, bail};
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -8,7 +8,14 @@ use std::{
     fs::File,
     io::{Read, Seek, Write},
     net::{IpAddr, Ipv4Addr},
-    os::fd::AsRawFd,
+    os::{
+        fd::AsRawFd,
+        linux::net::SocketAddrExt,
+        unix::{
+            ffi::OsStrExt,
+            net::{SocketAddr, UnixStream},
+        },
+    },
     path::{Path, PathBuf},
     str::FromStr,
     sync::Arc,
@@ -18,7 +25,10 @@ use tokio::{
     sync::{Mutex, watch},
     time::Instant,
 };
-use zbus::Connection;
+use zbus::{
+    Connection,
+    address::{self, transport},
+};
 
 #[allow(unused)]
 #[allow(non_camel_case_types)]
@@ -154,7 +164,26 @@ fn main() -> eyre::Result<()> {
         }
     }
 
-    let conn = zbus::blocking::connection::Builder::system()?.build()?;
+    // TODO: Consider connecting to the bus as a regular user
+    let conn_uid = unsafe { libc::getuid() };
+    let conn = match zbus::Address::system()?.transport() {
+        address::Transport::Unix(unix) => {
+            let path = match unix.path() {
+                transport::UnixSocket::File(path) => SocketAddr::from_pathname(path)?,
+                transport::UnixSocket::Abstract(path) => {
+                    SocketAddr::from_abstract_name(path.as_bytes())?
+                }
+                t => bail!("Unknown dbus transport: {t}"),
+            };
+            UnixStream::connect_addr(&path).with_context(|| format!("Can't connect to {path:?}"))?
+        }
+        t => bail!("Unknown dbus transport: {t}"),
+    };
+
+    // Check sanity before dropping caps
+    if let Ok(iter) = std::fs::read_dir("/proc/self/task/") {
+        assert_eq!(iter.count(), 1);
+    }
 
     unsafe {
         bpf::bpf_drop_caps();
@@ -164,15 +193,21 @@ fn main() -> eyre::Result<()> {
         .enable_all()
         .build()
         .expect("Failed building the Runtime")
-        .block_on(run(args, files, conn))
+        .block_on(run(args, files, conn, conn_uid))
 }
 
 async fn run(
     args: CliArgs,
     mut files: Vec<(PathBuf, File)>,
-    conn: zbus::blocking::Connection,
+    conn: UnixStream,
+    conn_uid: u32,
 ) -> eyre::Result<()> {
-    let conn = zbus::Connection::from(conn);
+    conn.set_nonblocking(true)?;
+    let conn = tokio::net::UnixStream::from_std(conn)?;
+    let conn = zbus::connection::Builder::unix_stream(conn)
+        .user_id(conn_uid)
+        .build()
+        .await?;
 
     let state = Watch::new(State {
         enable: false,
