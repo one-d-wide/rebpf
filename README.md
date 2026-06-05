@@ -212,6 +212,8 @@ fetch them.
 verifier accepts it.
 - The nix package requires `./Cargo.nix` to be kept in sync with `Cargo.lock`
 using [crate2nix], see [./scripts/update.sh].
+- Build with `--features=bpf-trace` to enable debug output in
+`/sys/kernel/debug/tracing/trace_pipe`.
 
 [./shell.nix]: ./shell.nix
 [./rebpf/build-loader.sh]: ./rebpf/build-loader.sh

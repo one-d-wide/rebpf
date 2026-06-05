@@ -8,8 +8,16 @@ fn main() {
     let bindings_rs = run("bindgen bpf-shared.h --rustified-enum .* -- -DBPF -DBINDGEN");
     std::fs::write("bindings.rs", bindings_rs).unwrap();
 
+    let bpf_trace = if cfg!(feature = "bpf-trace") {
+        "BPF_TRACE=1"
+    } else {
+        ""
+    };
+
     let out_dir = std::env::var("OUT_DIR").unwrap();
-    run("env NO_COMPILE_COMMANDS=1 REBPF_SRC=. bash ./build-loader.sh");
+    run(format!(
+        "env {bpf_trace} NO_COMPILE_COMMANDS=1 REBPF_SRC=. bash ./build-loader.sh"
+    ));
 
     println!("cargo:rustc-link-arg={out_dir}/bpf-load.o");
     for lib in run("pkg-config --libs libbpf libcap").split(" ") {
@@ -21,7 +29,7 @@ fn run(cmd: impl AsRef<str>) -> String {
     let cmd = cmd.as_ref();
     let (prog, args) = cmd.split_once(" ").unwrap();
     let res = std::process::Command::new(prog)
-        .args(args.split(" "))
+        .args(args.split(" ").filter(|a| !a.is_empty()))
         .stdout(std::process::Stdio::piped())
         .spawn()
         .and_then(|e| e.wait_with_output());

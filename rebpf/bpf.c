@@ -64,10 +64,10 @@ int cgroup_socket_create(struct bpf_sock *ctx) {
 
   struct task_struct *task = (void *)bpf_get_current_task_btf();
   u32 uid = bpf_get_current_uid_gid();
-  // bpf_printk("cgroup/sock_create %s", task->comm);
+  bpf_printk("cgroup/sock_create %s", task->comm);
 
   u64 cookie = bpf_get_socket_cookie(ctx);
-  // bpf_printk("%lx", cookie);
+  bpf_printk("%lx", cookie);
 
   // TODO: maybe leave a mark on the socket instead
 
@@ -269,7 +269,7 @@ int ingress(struct __sk_buff *skb) {
     return TCX_DROP;
   }
 
-  // bpf_printk("tcx/ingress mark=%ld", skb->mark);
+  bpf_printk("tcx/ingress mark=%ld", skb->mark);
   __atomic_fetch_add(&STATS.rx_bytes, skb->wire_len, __ATOMIC_RELAXED);
 
   return do_redirect(skb, &CONFIG.to_dev, &CONFIG.from_dev, true);
@@ -292,7 +292,8 @@ int cgroup_skb_egress(struct __sk_buff *skb) {
 
   u64 cookie = bpf_get_socket_cookie(skb);
   if (!bpf_map_lookup_elem(&socket_cache, &cookie)) {
-    // bpf_printk("can't lookup socket");
+    bpf_printk("egress socket not tracked mark=%ld to_ifi=%ld", skb->mark,
+               skb->ifindex);
     return 1;
   }
 
@@ -308,7 +309,7 @@ int egress(struct __sk_buff *skb) {
     return TCX_PASS;
   }
 
-  // bpf_printk("tcx/egress mark=%ld", skb->mark);
+  bpf_printk("tcx/egress mark=%ld", skb->mark);
   __atomic_fetch_add(&STATS.tx_bytes, skb->wire_len, __ATOMIC_RELAXED);
 
   return do_redirect(skb, &CONFIG.from_dev, &CONFIG.to_dev, false);
@@ -348,7 +349,7 @@ static bool needs_mark_descend(struct task_struct *task, u32 uid) {
   u8 res = false;
   int i = 0;
   bpf_for(i, 0, DESCEND_MAX) {
-    // bpf_printk("TASK %d %d %s", i, task->pid, task->comm);
+    bpf_printk("TASK %d %d %s", i, task->pid, task->comm);
 
     // Check if task at hand is marked
     res = needs_mark_uncached(task, uid);
@@ -370,7 +371,7 @@ static bool needs_mark_descend(struct task_struct *task, u32 uid) {
 
     u8 *cached_res = bpf_map_lookup_elem(&task_cache, &par_id);
     if (cached_res) {
-      // bpf_printk("PARENT CACHED %d %d %s", i, par->pid, par->comm);
+      bpf_printk("PARENT CACHED %d %d %s", i, par->pid, par->comm);
       res = *cached_res;
       break;
     }
@@ -391,7 +392,7 @@ static bool needs_mark_descend(struct task_struct *task, u32 uid) {
 
   // We can't build a proper stack, so we will just buld
   if (bpf_map_update_elem(&task_cache, &taskid, &res, BPF_ANY)) {
-    // bpf_printk("err updating task cache");
+    bpf_printk("err updating task cache");
   }
 
   return res;
@@ -411,7 +412,7 @@ static bool needs_mark_uncached(struct task_struct *task, u32 uid) {
   struct file *file = task->mm->exe_file;
 
   if (!file) {
-    // bpf_printk("task doesn't have a file %s", task->comm);
+    bpf_printk("task doesn't have a file %s", task->comm);
     return false;
   }
 
@@ -423,7 +424,7 @@ static bool needs_mark_uncached(struct task_struct *task, u32 uid) {
   }
 
   if (!path) {
-    // bpf_printk("err path d path", task->comm);
+    bpf_printk("err path d path", task->comm);
     return false;
   }
 
@@ -449,8 +450,10 @@ static bool needs_mark_uncached(struct task_struct *task, u32 uid) {
 
 static int do_redirect(struct __sk_buff *skb, Redirect *from_dev,
                        Redirect *to_dev, bool is_ingress) {
-  // bpf_printk("do_redirect mark=%ld to_ifi=%ld", skb->mark, to_dev->ifindex);
-  // print_ipv4("do_redirect to_addr", to_dev->addr[0]);
+  bpf_printk("DO_REDIRECT");
+  bpf_printk("do_redirect mark=%ld to_ifi=%ld len=%ld", skb->mark,
+             to_dev->ifindex, skb->wire_len);
+  print_ipv4("do_redirect to_addr", to_dev->addr[0]);
 
   u64 data_off = BPF_CORE_READ(((struct sk_buff *)skb), data) -
                  BPF_CORE_READ(((struct sk_buff *)skb), head);
@@ -462,7 +465,7 @@ static int do_redirect(struct __sk_buff *skb, Redirect *from_dev,
 
   // Make the verifier happy
   if (eth_off > (1 << 15) || iph_off > (1 << 15)) {
-    // bpf_printk("oops, got invalid header len");
+    bpf_printk("oops, got invalid header len");
     return TCX_PASS;
   }
 
@@ -470,10 +473,10 @@ static int do_redirect(struct __sk_buff *skb, Redirect *from_dev,
     // To-device is L2 device and needs an ethernet header, which the current
     // skb doesn't have it. We should allocate one
 
-    // bpf_printk("alloc mac");
+    bpf_printk("alloc mac");
 
     if (bpf_skb_change_head(skb, sizeof(struct ethhdr), 0)) {
-      // bpf_printk("no eth allocated");
+      bpf_printk("no eth allocated");
       return TCX_PASS;
     }
     iph_off += sizeof(struct ethhdr);
@@ -487,7 +490,7 @@ static int do_redirect(struct __sk_buff *skb, Redirect *from_dev,
   void *data = (void *)(long)skb->data;
   if (data + eth_off + sizeof(struct ethhdr) > (void *)(long)skb->data_end ||
       data + iph_off + sizeof(struct iphdr) > (void *)(long)skb->data_end) {
-    // bpf_printk("oops, got invalid header len");
+    bpf_printk("oops, got invalid header len");
     return 0;
   }
 
@@ -524,34 +527,34 @@ static int do_redirect(struct __sk_buff *skb, Redirect *from_dev,
       l.ipv4_dst = iph->daddr;
     }
 
-    // print_ipv4("orig saddr ", l.ipv4_src);
-    // print_ipv4("orig daddr ", l.ipv4_dst);
+    print_ipv4("probing saddr ", l.ipv4_src);
+    print_ipv4("probing daddr ", l.ipv4_dst);
 
     // TODO: direct + table id?
     long res = bpf_fib_lookup(skb, &l, sizeof(l), 0);
 
-    // print_ipv4("new saddr ", l.ipv4_src);
-    // print_ipv4("new daddr ", l.ipv4_dst);
+    print_ipv4("preferred saddr ", l.ipv4_src);
+    print_ipv4("preferred daddr ", l.ipv4_dst);
 
-    // bpf_printk("res: %ld", res);
-    // bpf_printk("ifindex: %u", l.ifindex);
+    bpf_printk("res: %ld", res);
+    bpf_printk("ifindex: %u", l.ifindex);
 
-    // print_mac("smac ", l.smac);
-    // print_mac("dmac ", l.dmac);
+    print_mac("smac ", l.smac);
+    print_mac("dmac ", l.dmac);
 
     if (!res && l.ifindex != t_dev->ifindex) {
-      // bpf_printk("found lan (different interface)");
+      bpf_printk("FOUND LAN (different interface)");
       return TCX_PASS;
     }
 
-    // bpf_printk("f_dev next mac set=%i", f_dev->set_nexthop_mac);
-    // print_mac("f_dev next mac", f_dev->nexthop_mac);
-    // bpf_printk("t_dev next mac set=%i", t_dev->set_nexthop_mac);
-    // print_mac("t_dev next mac", t_dev->nexthop_mac);
+    bpf_printk("f_dev next mac set=%i", f_dev->set_nexthop_mac);
+    print_mac("f_dev next mac", f_dev->nexthop_mac);
+    bpf_printk("t_dev next mac set=%i", t_dev->set_nexthop_mac);
+    print_mac("t_dev next mac", t_dev->nexthop_mac);
 
     if (!res && t_dev->set_nexthop_mac &&
         __builtin_memcmp(t_dev->nexthop_mac, l.dmac, 6)) {
-      // bpf_printk("found lan (different nexthop mac)");
+      bpf_printk("FOUND LAN (different nexthop mac)");
       return TCX_PASS;
     }
   }
@@ -564,10 +567,10 @@ static int do_redirect(struct __sk_buff *skb, Redirect *from_dev,
       return 0;
     }
 
-    // print_mac("orig dmac", eth->h_dest);
-    // print_mac("orig smac", eth->h_source);
+    print_mac("orig dmac", eth->h_dest);
+    print_mac("orig smac", eth->h_source);
 
-    // print_mac("to_dev mac", to_dev->mac);
+    print_mac("to_dev mac", to_dev->mac);
 
     if (is_ingress) {
       __builtin_memcpy(eth->h_dest, to_dev->mac, sizeof(to_dev->mac));
@@ -586,8 +589,8 @@ static int do_redirect(struct __sk_buff *skb, Redirect *from_dev,
       }
     }
 
-    // print_mac("new dmac", eth->h_dest);
-    // print_mac("new smac", eth->h_source);
+    print_mac("new dmac", eth->h_dest);
+    print_mac("new smac", eth->h_source);
   }
 
   // TODO: handle ipv6
@@ -601,7 +604,7 @@ static int do_redirect(struct __sk_buff *skb, Redirect *from_dev,
   u32 old_addr;
   u32 new_addr = to_dev->addr[0];
 
-  // bpf_printk("redirecting");
+  bpf_printk("REDIRECTING %s", is_ingress ? "(ingress)" : "(egress)");
 
   if (is_ingress) {
     old_addr = iph->daddr;
@@ -610,6 +613,9 @@ static int do_redirect(struct __sk_buff *skb, Redirect *from_dev,
     old_addr = iph->saddr;
     iph->saddr = new_addr;
   }
+
+  print_ipv4("new saddr", iph->saddr);
+  print_ipv4("new daddr", iph->daddr);
 
   u32 l4_csum_off = 0;
   switch (ipproto) {
@@ -646,7 +652,7 @@ static int do_redirect(struct __sk_buff *skb, Redirect *from_dev,
       goto skip_dns;
     }
 
-    // bpf_printk("spoofing dns");
+    bpf_printk("spoofing dns");
 
     struct NatKey k = {
         .remote_ip = iph->saddr,
@@ -655,19 +661,19 @@ static int do_redirect(struct __sk_buff *skb, Redirect *from_dev,
         .local_port = dport,
     };
 
-    // print_ipv4("dns from ", iph->saddr);
-    // bpf_printk("port %u", bpf_htons(sport));
-    // print_ipv4("dns to ", old_addr);
-    // bpf_printk("port %u", bpf_htons(dport));
+    print_ipv4("dns from ", iph->saddr);
+    bpf_printk("port %u", bpf_htons(sport));
+    print_ipv4("dns to ", old_addr);
+    bpf_printk("port %u", bpf_htons(dport));
 
     u32 *spoofed_saddr = bpf_map_lookup_elem(&nat_cache, &k);
     if (!spoofed_saddr) {
-      // bpf_printk("dns request not found");
+      bpf_printk("dns request not found");
       goto skip_dns;
     }
 
-    // print_ipv4("dns request found to ", *spoofed_saddr);
-    // bpf_printk("dns local port %u", dport);
+    print_ipv4("dns request found to ", *spoofed_saddr);
+    bpf_printk("dns local port %u", dport);
 
     u32 old_saddr = iph->saddr;
     u32 new_saddr = *spoofed_saddr;
@@ -687,15 +693,15 @@ static int do_redirect(struct __sk_buff *skb, Redirect *from_dev,
       goto skip_dns;
     }
 
-    // bpf_printk("spoofing dns");
+    bpf_printk("spoofing dns");
 
     u32 old_daddr = iph->daddr;
     u32 new_daddr = CONFIG.spoof_dns_ipv4;
     iph->daddr = new_daddr;
 
-    // print_ipv4("dns to ", old_daddr);
-    // bpf_printk("dport %u", bpf_htons(dport));
-    // bpf_printk("sport %u", bpf_htons(sport));
+    print_ipv4("dns to ", old_daddr);
+    bpf_printk("dport %u", bpf_htons(dport));
+    bpf_printk("sport %u", bpf_htons(sport));
 
     struct NatKey k = {
         .remote_ip = new_daddr,

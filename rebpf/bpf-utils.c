@@ -65,6 +65,14 @@ static void dump_sock(struct __sk_buff *skb, const char *dir) {
   print_ipv42(dir, "ipv4 dst", ipv4.daddr);
 }
 
+#ifndef BPF_TRACE
+#define bpf_printk(...)
+#define print_ipv4(...)
+#define print_mac(...)
+#define dump_sock(...)
+#endif
+
+
 static char PATH_BUF[4096];
 static char *read_path_buf(const struct file *file) {
   const size_t sz = sizeof(PATH_BUF);
@@ -132,7 +140,7 @@ static void match_ctx_init(MatchCtx *ctx, u32 uid, const char *path) {
 static int match_ctx_match(const MatchCtx *ctx,
                            const Match *match) {
   if (match->uid != 0 && match->uid != ctx->uid) {
-    // bpf_printk("Comparing basename '%s': different uid", ctx->basename);
+    bpf_printk("Comparing basename '%s': different uid", ctx->basename);
     return 0;
   }
 

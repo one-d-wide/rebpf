@@ -10,6 +10,9 @@ path = "main.rs"
 [build-dependencies]
 cc = "1"
 
+[features]
+bpf-trace = []
+
 [dependencies]
 env_logger.workspace = true
 log.workspace = true
