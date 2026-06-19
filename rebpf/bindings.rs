@@ -106,9 +106,8 @@ pub const DESCEND_MAX: u32 = 1024;
 pub const MATCHES_BUF_MAX: u32 = 128;
 pub const STRINGS_BUF_MAX: u32 = 4096;
 pub const DNS_PORT: u32 = 53;
-pub const SOCKET_CACHE_MAX: u32 = 4096;
+pub const PATH_MAX: u32 = 4096;
 pub const TASK_CACHE_MAX: u32 = 1024;
-pub const NAT_CACHE_MAX: u32 = 1024;
 pub type __u_char = ::std::os::raw::c_uchar;
 pub type __u_short = ::std::os::raw::c_ushort;
 pub type __u_int = ::std::os::raw::c_uint;
@@ -200,6 +199,24 @@ pub type uint_fast32_t = ::std::os::raw::c_ulong;
 pub type uint_fast64_t = ::std::os::raw::c_ulong;
 pub type intmax_t = __intmax_t;
 pub type uintmax_t = __uintmax_t;
+pub type wchar_t = ::std::os::raw::c_int;
+#[repr(C)]
+#[repr(align(16))]
+#[derive(Debug, Copy, Clone)]
+pub struct max_align_t {
+    pub __clang_max_align_nonce1: ::std::os::raw::c_longlong,
+    pub __bindgen_padding_0: u64,
+    pub __clang_max_align_nonce2: u128,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of max_align_t"][::std::mem::size_of::<max_align_t>() - 32usize];
+    ["Alignment of max_align_t"][::std::mem::align_of::<max_align_t>() - 16usize];
+    ["Offset of field: max_align_t::__clang_max_align_nonce1"]
+        [::std::mem::offset_of!(max_align_t, __clang_max_align_nonce1) - 0usize];
+    ["Offset of field: max_align_t::__clang_max_align_nonce2"]
+        [::std::mem::offset_of!(max_align_t, __clang_max_align_nonce2) - 16usize];
+};
 pub type u64_ = u64;
 pub type u32_ = u32;
 pub type u16_ = u16;
@@ -212,6 +229,7 @@ pub enum MatchKind {
     MATCH_KIND_FULL = 2,
     MATCH_KIND_SUBSTR = 3,
     MATCH_KIND_PREFIX = 4,
+    __MATCH_KIND_MAX = 5,
 }
 unsafe extern "C" {
     pub static mut MATCH_KIND_STRINGS: [*const ::std::os::raw::c_char; 6usize];
@@ -264,99 +282,50 @@ const _: () = {
 };
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
-pub struct Redirect {
-    pub checked_mac: bool,
-    pub is_ingress: bool,
-    pub family: u8_,
-    pub ifindex: u32_,
-    pub set_l2: bool,
-    pub mac: [u8_; 6usize],
-    pub addr: [u32_; 4usize],
-    pub set_nexthop_mac: bool,
-    pub set_nexthop_addr: bool,
-    pub nexthop_mac: [u8_; 6usize],
-    pub nexthop_addr: [u32_; 4usize],
-    pub ifname: [::std::os::raw::c_char; 16usize],
-}
-#[allow(clippy::unnecessary_operation, clippy::identity_op)]
-const _: () = {
-    ["Size of Redirect"][::std::mem::size_of::<Redirect>() - 72usize];
-    ["Alignment of Redirect"][::std::mem::align_of::<Redirect>() - 4usize];
-    ["Offset of field: Redirect::checked_mac"]
-        [::std::mem::offset_of!(Redirect, checked_mac) - 0usize];
-    ["Offset of field: Redirect::is_ingress"]
-        [::std::mem::offset_of!(Redirect, is_ingress) - 1usize];
-    ["Offset of field: Redirect::family"][::std::mem::offset_of!(Redirect, family) - 2usize];
-    ["Offset of field: Redirect::ifindex"][::std::mem::offset_of!(Redirect, ifindex) - 4usize];
-    ["Offset of field: Redirect::set_l2"][::std::mem::offset_of!(Redirect, set_l2) - 8usize];
-    ["Offset of field: Redirect::mac"][::std::mem::offset_of!(Redirect, mac) - 9usize];
-    ["Offset of field: Redirect::addr"][::std::mem::offset_of!(Redirect, addr) - 16usize];
-    ["Offset of field: Redirect::set_nexthop_mac"]
-        [::std::mem::offset_of!(Redirect, set_nexthop_mac) - 32usize];
-    ["Offset of field: Redirect::set_nexthop_addr"]
-        [::std::mem::offset_of!(Redirect, set_nexthop_addr) - 33usize];
-    ["Offset of field: Redirect::nexthop_mac"]
-        [::std::mem::offset_of!(Redirect, nexthop_mac) - 34usize];
-    ["Offset of field: Redirect::nexthop_addr"]
-        [::std::mem::offset_of!(Redirect, nexthop_addr) - 40usize];
-    ["Offset of field: Redirect::ifname"][::std::mem::offset_of!(Redirect, ifname) - 56usize];
-};
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct Stats {
-    pub tx_bytes: u64_,
-    pub rx_bytes: u64_,
-    pub time_ns: u64_,
-}
-#[allow(clippy::unnecessary_operation, clippy::identity_op)]
-const _: () = {
-    ["Size of Stats"][::std::mem::size_of::<Stats>() - 24usize];
-    ["Alignment of Stats"][::std::mem::align_of::<Stats>() - 8usize];
-    ["Offset of field: Stats::tx_bytes"][::std::mem::offset_of!(Stats, tx_bytes) - 0usize];
-    ["Offset of field: Stats::rx_bytes"][::std::mem::offset_of!(Stats, rx_bytes) - 8usize];
-    ["Offset of field: Stats::time_ns"][::std::mem::offset_of!(Stats, time_ns) - 16usize];
-};
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
 pub struct BpfConfig {
     pub enable: bool,
-    pub drop: bool,
+    pub enable_dns: bool,
     pub check_parents: bool,
     pub mark: u32_,
-    pub from_dev: Redirect,
-    pub to_dev: Redirect,
     pub nmatches: u32_,
     pub strings_len: u32_,
     pub matches: *mut MatchStr,
-    pub allow_lan: bool,
-    pub spoof_dns: bool,
-    pub spoof_dns_ipv4: u32_,
     pub generation: u64_,
 }
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
-    ["Size of BpfConfig"][::std::mem::size_of::<BpfConfig>() - 184usize];
+    ["Size of BpfConfig"][::std::mem::size_of::<BpfConfig>() - 32usize];
     ["Alignment of BpfConfig"][::std::mem::align_of::<BpfConfig>() - 8usize];
     ["Offset of field: BpfConfig::enable"][::std::mem::offset_of!(BpfConfig, enable) - 0usize];
-    ["Offset of field: BpfConfig::drop"][::std::mem::offset_of!(BpfConfig, drop) - 1usize];
+    ["Offset of field: BpfConfig::enable_dns"]
+        [::std::mem::offset_of!(BpfConfig, enable_dns) - 1usize];
     ["Offset of field: BpfConfig::check_parents"]
         [::std::mem::offset_of!(BpfConfig, check_parents) - 2usize];
     ["Offset of field: BpfConfig::mark"][::std::mem::offset_of!(BpfConfig, mark) - 4usize];
-    ["Offset of field: BpfConfig::from_dev"][::std::mem::offset_of!(BpfConfig, from_dev) - 8usize];
-    ["Offset of field: BpfConfig::to_dev"][::std::mem::offset_of!(BpfConfig, to_dev) - 80usize];
-    ["Offset of field: BpfConfig::nmatches"]
-        [::std::mem::offset_of!(BpfConfig, nmatches) - 152usize];
+    ["Offset of field: BpfConfig::nmatches"][::std::mem::offset_of!(BpfConfig, nmatches) - 8usize];
     ["Offset of field: BpfConfig::strings_len"]
-        [::std::mem::offset_of!(BpfConfig, strings_len) - 156usize];
-    ["Offset of field: BpfConfig::matches"][::std::mem::offset_of!(BpfConfig, matches) - 160usize];
-    ["Offset of field: BpfConfig::allow_lan"]
-        [::std::mem::offset_of!(BpfConfig, allow_lan) - 168usize];
-    ["Offset of field: BpfConfig::spoof_dns"]
-        [::std::mem::offset_of!(BpfConfig, spoof_dns) - 169usize];
-    ["Offset of field: BpfConfig::spoof_dns_ipv4"]
-        [::std::mem::offset_of!(BpfConfig, spoof_dns_ipv4) - 172usize];
+        [::std::mem::offset_of!(BpfConfig, strings_len) - 12usize];
+    ["Offset of field: BpfConfig::matches"][::std::mem::offset_of!(BpfConfig, matches) - 16usize];
     ["Offset of field: BpfConfig::generation"]
-        [::std::mem::offset_of!(BpfConfig, generation) - 176usize];
+        [::std::mem::offset_of!(BpfConfig, generation) - 24usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ProcFdEntry {
+    pub pid: u64_,
+    pub start_boottime: u64_,
+    pub fd: u32_,
+    pub _pad: u32_,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of ProcFdEntry"][::std::mem::size_of::<ProcFdEntry>() - 24usize];
+    ["Alignment of ProcFdEntry"][::std::mem::align_of::<ProcFdEntry>() - 8usize];
+    ["Offset of field: ProcFdEntry::pid"][::std::mem::offset_of!(ProcFdEntry, pid) - 0usize];
+    ["Offset of field: ProcFdEntry::start_boottime"]
+        [::std::mem::offset_of!(ProcFdEntry, start_boottime) - 8usize];
+    ["Offset of field: ProcFdEntry::fd"][::std::mem::offset_of!(ProcFdEntry, fd) - 16usize];
+    ["Offset of field: ProcFdEntry::_pad"][::std::mem::offset_of!(ProcFdEntry, _pad) - 20usize];
 };
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -373,59 +342,18 @@ const _: () = {
 };
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
-pub struct NatKey {
-    pub remote_ip: u32_,
-    pub local_ip: u32_,
-    pub remote_port: u16_,
-    pub local_port: u16_,
-}
-#[allow(clippy::unnecessary_operation, clippy::identity_op)]
-const _: () = {
-    ["Size of NatKey"][::std::mem::size_of::<NatKey>() - 12usize];
-    ["Alignment of NatKey"][::std::mem::align_of::<NatKey>() - 4usize];
-    ["Offset of field: NatKey::remote_ip"][::std::mem::offset_of!(NatKey, remote_ip) - 0usize];
-    ["Offset of field: NatKey::local_ip"][::std::mem::offset_of!(NatKey, local_ip) - 4usize];
-    ["Offset of field: NatKey::remote_port"][::std::mem::offset_of!(NatKey, remote_port) - 8usize];
-    ["Offset of field: NatKey::local_port"][::std::mem::offset_of!(NatKey, local_port) - 10usize];
-};
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct NatVal {
-    pub spoofed_remote_ip: u32_,
-}
-#[allow(clippy::unnecessary_operation, clippy::identity_op)]
-const _: () = {
-    ["Size of NatVal"][::std::mem::size_of::<NatVal>() - 4usize];
-    ["Alignment of NatVal"][::std::mem::align_of::<NatVal>() - 4usize];
-    ["Offset of field: NatVal::spoofed_remote_ip"]
-        [::std::mem::offset_of!(NatVal, spoofed_remote_ip) - 0usize];
-};
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
 pub struct Dump {
-    pub socket_keys: [u64_; 4096usize],
-    pub socket_vals: [bool; 4096usize],
-    pub socket_len: u64_,
     pub task_keys: [TaskId; 1024usize],
     pub task_vals: [bool; 1024usize],
     pub task_len: u64_,
-    pub nat_keys: [NatKey; 1024usize],
-    pub nat_vals: [NatVal; 1024usize],
-    pub nat_len: u64_,
 }
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
-    ["Size of Dump"][::std::mem::size_of::<Dump>() - 70680usize];
+    ["Size of Dump"][::std::mem::size_of::<Dump>() - 17416usize];
     ["Alignment of Dump"][::std::mem::align_of::<Dump>() - 8usize];
-    ["Offset of field: Dump::socket_keys"][::std::mem::offset_of!(Dump, socket_keys) - 0usize];
-    ["Offset of field: Dump::socket_vals"][::std::mem::offset_of!(Dump, socket_vals) - 32768usize];
-    ["Offset of field: Dump::socket_len"][::std::mem::offset_of!(Dump, socket_len) - 36864usize];
-    ["Offset of field: Dump::task_keys"][::std::mem::offset_of!(Dump, task_keys) - 36872usize];
-    ["Offset of field: Dump::task_vals"][::std::mem::offset_of!(Dump, task_vals) - 53256usize];
-    ["Offset of field: Dump::task_len"][::std::mem::offset_of!(Dump, task_len) - 54280usize];
-    ["Offset of field: Dump::nat_keys"][::std::mem::offset_of!(Dump, nat_keys) - 54288usize];
-    ["Offset of field: Dump::nat_vals"][::std::mem::offset_of!(Dump, nat_vals) - 66576usize];
-    ["Offset of field: Dump::nat_len"][::std::mem::offset_of!(Dump, nat_len) - 70672usize];
+    ["Offset of field: Dump::task_keys"][::std::mem::offset_of!(Dump, task_keys) - 0usize];
+    ["Offset of field: Dump::task_vals"][::std::mem::offset_of!(Dump, task_vals) - 16384usize];
+    ["Offset of field: Dump::task_len"][::std::mem::offset_of!(Dump, task_len) - 17408usize];
 };
 unsafe extern "C" {
     pub fn bpf_drop_caps();
@@ -434,13 +362,7 @@ unsafe extern "C" {
     pub fn bpf_init();
 }
 unsafe extern "C" {
-    pub fn bpf_unload();
-}
-unsafe extern "C" {
     pub fn bpf_reload_config(conf: *mut BpfConfig) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
-    pub fn bpf_get_stats(stats: *mut Stats);
 }
 unsafe extern "C" {
     pub fn bpf_get_proc_names(
@@ -451,4 +373,16 @@ unsafe extern "C" {
 }
 unsafe extern "C" {
     pub fn bpf_get_dump(dump: *mut Dump);
+}
+unsafe extern "C" {
+    pub fn bpf_run_dns_ringbuf(
+        callback: ::std::option::Option<
+            unsafe extern "C" fn(
+                ctx: *mut ::std::os::raw::c_void,
+                data: *mut ::std::os::raw::c_void,
+                data_sz: usize,
+            ) -> ::std::os::raw::c_int,
+        >,
+        ctx: *mut ::std::os::raw::c_void,
+    );
 }

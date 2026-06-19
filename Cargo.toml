@@ -6,7 +6,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 
 [profile.dev]
@@ -23,7 +23,7 @@ widgets.path = "./rebpf-gui/widgets"
 iced = { version = "0", default-features = false, features = [ "wayland", "x11", "tokio", "tiny-skia", "advanced", "selector", "svg" ] }
 iced_core = { version = "*", default-features = false }
 iced_widget = { version = "*", default-features = false }
-iced_aw = { version = "0.13.0", features = [ "labeled_frame", "card" ] }
+iced_aw = { version = "0.14", default-features = false, features = [ "drop_down" ] }
 zbus = { version = "5", default-features = false, features = [ "tokio", "async-io" ] }
 tokio = { version = "*", default-features = false, features = [ "macros" ] }
 serde = { version = "1", features = ["derive"] }
