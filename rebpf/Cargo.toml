@@ -22,7 +22,7 @@ log.workspace = true
 argh.workspace = true
 libc.workspace = true
 
-tokio = { version = "1", default-features = false, features = [ "rt", "sync", "macros" ] }
+tokio = { version = "1", default-features = false, features = [ "rt", "sync", "signal", "macros" ] }
 eyre = "0"
 netlink-bindings = { version = "0.3", features = [ "rt-link", "rt-addr", "rt-route", "rt-rule", "rt-neigh", "nftables" ] }
 netlink-socket2 = { version = "0.3", features = [ ] }

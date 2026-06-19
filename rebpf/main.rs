@@ -116,10 +116,24 @@ async fn run(args: CliArgs) -> eyre::Result<()> {
     ctx.to_changed.tx.send(()).unwrap();
     ctx.from_changed.tx.send(()).unwrap();
 
+    let mut signals = tokio::task::JoinSet::new();
+    for kind in [
+        SignalKind::interrupt(),
+        SignalKind::terminate(),
+        SignalKind::quit(),
+    ] {
+        if let Ok(mut signal) = tokio::signal::unix::signal(kind) {
+            signals.spawn(async move {
+                signal.recv().await;
+            });
+        }
+    }
+
     let mut sock = NetlinkSocket::new();
 
     let res = tokio::select! {
         res = save_state_handle => res,
+        _ = signals.join_next() => Ok(Ok(())),
         res = tokio::spawn(netlink::watch_reload(ctx)) => res,
         res = tokio::spawn(netlink::watch_routes(ctx)) => res,
         res = tokio::task::spawn_blocking(|| netlink::watch_multicast(ctx)) => res,
