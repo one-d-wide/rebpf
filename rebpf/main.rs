@@ -132,7 +132,9 @@ fn main() -> eyre::Result<()> {
 
     let logger_env =
         env_logger::Env::default().default_filter_or(if args.verbose { "debug" } else { "warn" });
-    env_logger::Builder::from_env(logger_env).init();
+    env_logger::Builder::from_env(logger_env)
+        .filter_module("zbus", log::LevelFilter::Warn)
+        .init();
 
     unsafe {
         bpf::bpf_init();
