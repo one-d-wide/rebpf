@@ -35,12 +35,9 @@ struct {
 } task_cache SEC(".maps");
 
 struct {
-  __uint(type, BPF_MAP_TYPE_HASH);
-  // Sockets above this limit will be rejected
-  __uint(max_entries, SOCKET_CACHE_MAX);
-  __uint(key_size, sizeof(u64));
-  __uint(value_size, sizeof(bool));
-} socket_cache SEC(".maps");
+  __uint(type, BPF_MAP_TYPE_RINGBUF);
+  __uint(max_entries, 65536 * 2);
+} dns_ringbuf SEC(".maps");
 
 static bool needs_mark(struct task_struct *task, u32 uid);
 static bool needs_mark_uncached(struct task_struct *task, u32 uid);
@@ -333,4 +330,93 @@ static bool needs_mark_uncached(struct task_struct *task, u32 uid) {
   }
 
   return false;
+}
+
+SEC("cgroup_skb/ingress")
+int ingress(struct __sk_buff *skb) {
+  if (!CONFIG.enable_dns) {
+    return 1;
+  }
+
+  if (skb->vlan_present) {
+    return 1;
+  }
+
+  if (skb->family != AF_INET) {
+    return 1;
+  }
+
+  if (skb->remote_port != bpf_ntohl(53) && skb->remote_port != bpf_ntohl(0)) {
+    return 1;
+  }
+
+  bpf_printk("cgroup_skb/ingress mark=%ld sport=%ld", skb->mark,
+             bpf_ntohl(skb->remote_port));
+
+  void *data_end = (void *)(long)skb->data_end;
+  void *data = (void *)(long)skb->data;
+
+  struct iphdr *ip = data;
+  if ((void *)(ip + 1) > data_end) {
+    return 1;
+  }
+
+  if (ip->protocol != IPPROTO_UDP) {
+    return 1;
+  }
+
+  struct udphdr *udp = (void *)ip + ip->ihl * 4;
+  if ((void *)(udp + 1) > data_end) {
+    return 1;
+  }
+
+  if (udp->source != bpf_htons(53)) {
+    return 1;
+  }
+
+  void *dns = udp + 1;
+  u32 dns_len = data_end - dns;
+  u32 dns_off_base = dns - data;
+  u32 dns_off = dns - data;
+
+  // Make the verifier happy. IP doesn't allow this huge payloads anyway.
+  if (dns_len > 65536) {
+    return 1;
+  }
+
+  struct bpf_dynptr ptr = {};
+
+#define BLOCK 512 // Max size of a DNS packet without extensions
+#define ALIGN_UP(x, align_to) (((x) + ((align_to) - 1)) & ~((align_to) - 1))
+
+  if (bpf_ringbuf_reserve_dynptr(&dns_ringbuf, ALIGN_UP(dns_len, BLOCK), 0,
+                                 &ptr) < 0) {
+    goto out;
+  }
+
+  // Copy a large packet in blocks.
+  // bpf_dynptr_read() isn't allowed to access skb data,
+  // while bpf_dynptr_data() can't map a variable size blocks.
+  while (dns_len >= BLOCK) {
+    void *block = bpf_dynptr_data(&ptr, dns_off - dns_off_base, BLOCK);
+    if (!block) {
+      goto out;
+    }
+    bpf_skb_load_bytes(skb, dns_off, block, BLOCK);
+    dns_off += BLOCK;
+    dns_len -= BLOCK;
+  }
+
+  if (dns_len > 0) {
+    void *block = bpf_dynptr_data(&ptr, dns_off - dns_off_base, BLOCK);
+    if (!block) {
+      goto out;
+    }
+    bpf_skb_load_bytes(skb, dns_off, block, dns_len);
+  }
+
+out:
+  bpf_ringbuf_submit_dynptr(&ptr, 0);
+
+  return 1;
 }

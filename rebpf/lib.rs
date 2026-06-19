@@ -1,4 +1,6 @@
 use eyre::bail;
+use hickory_proto::rr::Name;
+use ipnet::IpNet;
 use netlink_socket2::NetlinkSocket;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -83,6 +85,33 @@ pub struct State {
     pub generation: u64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DnsRecord {
+    pub ttl_expire: Instant,
+    pub dest: Ipv4Addr,
+    pub name: Name,
+}
+
+impl PartialOrd for DnsRecord {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(Ord::cmp(self, other))
+    }
+}
+
+impl Ord for DnsRecord {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        Ord::cmp(&self.ttl_expire, &other.ttl_expire).reverse()
+    }
+}
+
+pub struct DnsState {
+    pub sock: NetlinkSocket,
+    pub ttl_sleeper: Watch<Option<Instant>>,
+    pub heap: BinaryHeap<DnsRecord>,
+    pub hash: HashMap<(Name, Ipv4Addr), Instant>,
+    pub cache: HashMap<Name, Direction>,
+}
+
 pub struct Ctx {
     pub conn: &'static Connection,
     pub state: Watch<State>,
@@ -95,6 +124,8 @@ pub struct Ctx {
     pub do_reload: Watch<()>,
     pub bpf: Mutex<BpfCtx>,
     pub stats: Mutex<StatsHist>,
+    pub dns: Mutex<DnsState>,
+    pub dns_table: u32,
 }
 
 to_from_enum! {
@@ -110,6 +141,7 @@ to_from_enum! {
         ipv4,
         #[[rename = "ipv4/subnet"]]
         ipv4_subnet,
+        dns,
     }
 }
 
@@ -157,6 +189,7 @@ to_from_hashmap_or_default! {
         => spoof_dns: bool,
         => spoof_dns_ipv4: Ipv4Addr,
         => drop_egress_without_output: bool,
+        => dns_max_ttl_sec: u32,
     }
 }
 
@@ -168,6 +201,7 @@ impl Default for Config {
             spoof_dns: false,
             spoof_dns_ipv4: "8.8.8.8".parse().unwrap(),
             drop_egress_without_output: false,
+            dns_max_ttl_sec: 3600, // 1h
         }
     }
 }
@@ -195,8 +229,18 @@ impl Match {
             Kind::ipv4_subnet => {
                 let _ = self.pattern.parse::<IpNet>()?;
             }
+            Kind::dns => {
+                let _ = self.pattern.parse::<Name>()?;
+            }
         }
         Ok(())
+    }
+
+    pub fn is_dns(&self) -> bool {
+        match self.kind {
+            Kind::dns => true,
+            _ => false,
+        }
     }
 
     pub fn is_per_process(&self) -> bool {
@@ -230,6 +274,7 @@ pub struct Matches {
     pub matches: Vec<Match>,
     pub strings_len: usize,
     pub generation: u64,
+    pub dns_count: i32,
 }
 
 impl Matches {
@@ -247,6 +292,7 @@ impl Matches {
             bail!("Not enough space for a new match");
         }
 
+        self.dns_count += new.is_dns() as i32;
         self.strings_len = new_len;
         self.matches.push(new);
         self.generation += 1;
@@ -267,6 +313,7 @@ impl Matches {
             bail!("Not enough space for a new match");
         }
 
+        self.dns_count += to.is_dns() as i32 - from.is_dns() as i32;
         self.matches[pos] = to;
         self.strings_len = new_len;
         self.generation += 1;
@@ -282,6 +329,7 @@ impl Matches {
         };
 
         let old = self.matches.remove(pos);
+        self.dns_count -= new.is_dns() as i32;
         self.strings_len -= old.pattern.len() + 1;
         self.generation += 1;
 

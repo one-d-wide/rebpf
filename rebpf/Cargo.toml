@@ -32,3 +32,5 @@ zbus_polkit = "5"
 serde = { version = "1", features = [ "rc" ] }
 serde_json = "1"
 rand = "0"
+hickory-proto = { version = "0", default-features = false }
+ipnet = { version = "2", default-features = false }

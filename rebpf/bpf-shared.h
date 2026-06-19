@@ -110,5 +110,7 @@ void bpf_init();
 int bpf_reload_config(BpfConfig *conf);
 void bpf_get_proc_names(char **ptr, u64 *len, u64 *cap);
 void bpf_get_dump(Dump *dump);
+void bpf_run_dns_ringbuf(int (*callback)(void *ctx, void *data, size_t data_sz),
+                  void *ctx);
 
 #endif // BPF_SHARED_H

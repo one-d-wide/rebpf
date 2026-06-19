@@ -187,15 +187,18 @@ void bpf_init() {
   EXPECT(setrlimit(RLIMIT_MEMLOCK, &rlim_old) == 0);
 }
 
-void bpf_unload() {
-  if (links.egress) {
-    EXPECT0(bpf_link__destroy(links.egress));
-    links.egress = NULL;
-  }
+void bpf_run_dns_ringbuf(int (*callback)(void *ctx, void *data, size_t data_sz),
+                         void *ctx) {
+  struct ring_buffer *rb;
+  EXPECT((rb = ring_buffer__new(bpf_map__fd(skel->maps.dns_ringbuf), callback,
+                                ctx, NULL)));
 
-  if (links.ingress) {
-    EXPECT0(bpf_link__destroy(links.ingress));
-    links.ingress = NULL;
+  while (1) {
+    int err = ring_buffer__poll(rb, -1);
+    if (err < 0 && errno == EINTR) {
+      continue;
+    }
+    EXPECT(err >= 0);
   }
 }
 

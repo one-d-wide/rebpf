@@ -1,6 +1,10 @@
+use hickory_proto::rr::Name;
+use log::debug;
 use std::{
     collections::HashMap,
+    error::Error,
     ffi::{CStr, c_char},
+    net::Ipv4Addr,
     sync::Arc,
     time::Duration,
 };
@@ -8,7 +12,7 @@ use tokio::time::Instant;
 use zbus::{Connection, interface, message::Header};
 use zbus_polkit::policykit1::{AuthorityProxy, CheckAuthorizationFlags, Subject};
 
-use crate::{Config, Ctx, Match, Route, State, bpf};
+use crate::dns;
 use rebpf::{Config, Ctx, Match, Route, State, bpf};
 
 async fn peer_uid(conn: &Connection, header: &Header<'_>) -> zbus::fdo::Result<u32> {
@@ -151,7 +155,7 @@ impl Item {
         let uid = peer_uid(conn, &header).await?;
         let new = Match::from_hashmap(new, uid).map_err(eyre_to_inval)?;
 
-        if uid != 0 && uid != new.uid {
+        if uid != 0 && (uid != new.uid || !new.is_per_process()) {
             auth_or_err(conn, header).await?;
         }
 
@@ -170,7 +174,9 @@ impl Item {
         let from = Match::from_hashmap(from, uid).map_err(eyre_to_inval)?;
         let to = Match::from_hashmap(to, uid).map_err(eyre_to_inval)?;
 
-        if uid != 0 && (uid != from.uid || uid != to.uid) {
+        if uid != 0
+            && (uid != from.uid || uid != to.uid || !from.is_per_process() || !to.is_per_process())
+        {
             auth_or_err(conn, header).await?;
         }
 
@@ -187,7 +193,7 @@ impl Item {
         let uid = peer_uid(conn, &header).await?;
         let del = Match::from_hashmap(del, uid).map_err(eyre_to_inval)?;
 
-        if uid != 0 && uid != del.uid {
+        if uid != 0 && (uid != del.uid || !del.is_per_process()) {
             auth_or_err(conn, header).await?;
         }
 
@@ -245,6 +251,44 @@ impl Item {
         res.insert("rx-bytes", format!("{rx}"));
         res.insert("dtime-sec", format!("{dt}",));
         res
+    }
+
+    async fn get_dns_records(&self) -> Vec<HashMap<&str, String>> {
+        let dns = self.ctx.dns.lock().await;
+        let now = Instant::now();
+        let mut vec = Vec::new();
+        for rec in &dns.heap {
+            let mut res = HashMap::new();
+            let ttl = rec.ttl_expire.duration_since(now).as_secs();
+            res.insert("ttl", format!("{ttl}",));
+            res.insert("name", format!("{}", rec.name));
+            res.insert("address", format!("{}", rec.dest));
+            vec.push(res);
+        }
+        vec
+    }
+
+    async fn retire_dns_record(&self, record: HashMap<String, String>) -> zbus::fdo::Result<()> {
+        let dest = record
+            .get("destination")
+            .map(|ip| ip.parse::<Ipv4Addr>())
+            .transpose()
+            .map_err(err_to_inval)?;
+        let mut name = record
+            .get("name")
+            .map(|n| Name::from_str_relaxed(n))
+            .transpose()
+            .map_err(err_to_inval)?;
+        if let Some(name) = &mut name {
+            name.set_fqdn(true);
+        }
+
+        let mut dns = self.ctx.dns.lock().await;
+        if !dns::remove_records(self.ctx, &mut *dns, name.as_ref(), dest) {
+            return Err(str_to_inval("Didn't match any active records"));
+        }
+
+        Ok(())
     }
 
     // async fn get_dump(&self) -> HashMap<&str, String> {

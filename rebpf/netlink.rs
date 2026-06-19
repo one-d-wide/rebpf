@@ -295,6 +295,14 @@ pub fn watch_multicast(ctx: &Ctx) -> eyre::Result<()> {
                     continue;
                 }
 
+                // Only update default_route if we need have dns matches
+                if ctx.state.rx.borrow().matches.dns_count > 0 {
+                    let new_default = get_default_link(ctx, &mut sock).ok().flatten();
+                    if new_default != *ctx.default_route_changed.tx.borrow() {
+                        ctx.default_route_changed.tx.send(new_default).unwrap();
+                    }
+                }
+
                 if let Some(to) = &*ctx.routes_changed.rx.borrow()
                     && (attrs.get_oif().unwrap_or_default() == to.ifindex
                         || ctx.state.rx.borrow().config.allow_lan)
@@ -433,6 +441,7 @@ fn bpf_reload(bpf_ctx: &mut BpfCtx, conf: &State, enable: bool, mark: u32) {
     unsafe {
         let mut bpf: bpf::BpfConfig = std::mem::zeroed();
         bpf.enable = enable;
+        bpf.enable_dns = enable && conf.matches.dns_count > 0;
         bpf.mark = mark;
         bpf.generation = conf.matches.generation;
 
@@ -456,6 +465,7 @@ fn bpf_reload(bpf_ctx: &mut BpfCtx, conf: &State, enable: bool, mark: u32) {
                         // TODO: The following kinds don't need to be included
                         Kind::ipv4 => K::__MATCH_KIND_MAX,
                         Kind::ipv4_subnet => K::__MATCH_KIND_MAX,
+                        Kind::dns => K::__MATCH_KIND_MAX,
                     },
                     dir: match m.direction {
                         Direction::redirect => D::MATCH_DIR_REDIRECT,
@@ -480,6 +490,45 @@ fn bpf_reload(bpf_ctx: &mut BpfCtx, conf: &State, enable: bool, mark: u32) {
 
         bpf::bpf_reload_config(&mut bpf as *mut bpf::BpfConfig);
     }
+}
+
+pub fn setup_static_rules(ctx: &Ctx, sock: &mut NetlinkSocket) -> eyre::Result<()> {
+    // ip rule add table <table>
+    let mut req = rt_rule::Request::new()
+        .set_create()
+        .set_excl()
+        .op_newrule_do(&rt_rule::FibRuleHdr {
+            family: libc::AF_INET as u8,
+            action: rt_rule::FrAct::ToTbl as u8,
+            ..Default::default()
+        });
+    req.encode()
+        .push_priority(0)
+        .push_src(Ipv4Addr::UNSPECIFIED.into())
+        .push_table(ctx.dns_table);
+    sock.request(&req)?.recv_ack()?;
+
+    Ok(())
+}
+
+pub fn clear_static_rules(ctx: &Ctx, sock: &mut NetlinkSocket) -> eyre::Result<()> {
+    clear_table(sock, ctx.dns_table).ok();
+
+    for _ in 0..1000 {
+        // ip rule del table <mark>
+        let mut req = rt_rule::Request::new().op_delrule_do(&rt_rule::FibRuleHdr {
+            family: libc::AF_INET as u8,
+            ..Default::default()
+        });
+        req.encode().push_table(ctx.dns_table);
+        let res = sock.request(&req)?.recv_ack();
+
+        if res.is_err() {
+            break;
+        }
+    }
+
+    Ok(())
 }
 
 pub fn clear_table(sock: &mut NetlinkSocket, table: u32) -> eyre::Result<()> {

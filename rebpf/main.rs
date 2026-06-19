@@ -17,9 +17,10 @@ use tokio::{
 };
 
 mod dbus;
+mod dns;
 mod netlink;
 
-use rebpf::{BpfCtx, Ctx, Matches, State, Watch, bpf};
+use rebpf::{BpfCtx, Ctx, DnsState, Matches, State, Watch, bpf};
 
 #[derive(FromArgs)]
 /// Per-process network traffic redirection using eBPF.
@@ -96,6 +97,14 @@ async fn run(args: CliArgs) -> eyre::Result<()> {
         default_route_changed: Default::default(),
         do_reload: Default::default(),
         stats: Default::default(),
+        dns: Mutex::new(DnsState {
+            sock: NetlinkSocket::new(),
+            ttl_sleeper: Default::default(),
+            heap: Default::default(),
+            hash: Default::default(),
+            cache: Default::default(),
+        }),
+        dns_table: netlink::rand_table(),
         bpf: Mutex::new(BpfCtx {
             mark: None,
             matches_time: Instant::now(),
@@ -130,18 +139,26 @@ async fn run(args: CliArgs) -> eyre::Result<()> {
     }
 
     let mut sock = NetlinkSocket::new();
+    netlink::setup_static_rules(ctx, &mut sock)?;
 
     let res = tokio::select! {
         res = save_state_handle => res,
         _ = signals.join_next() => Ok(Ok(())),
         res = tokio::spawn(netlink::watch_reload(ctx)) => res,
         res = tokio::spawn(netlink::watch_routes(ctx)) => res,
+        res = tokio::spawn(dns::watch_dns_routes(ctx)) => res,
+        res = tokio::spawn(dns::watch_dns_ttl(ctx)) => res,
         res = tokio::task::spawn_blocking(|| netlink::watch_multicast(ctx)) => res,
+        _ = tokio::task::spawn_blocking(move || unsafe {
+            bpf::bpf_run_dns_ringbuf(Some(dns::callback), std::mem::transmute(ctx));
+        }) => Ok(Ok(())),
     };
 
     if let Some(mark) = ctx.bpf.lock().await.mark {
         netlink::clear_rules(&mut sock, mark).ok();
     }
+
+    netlink::clear_static_rules(ctx, &mut sock).ok();
 
     res?
 }
