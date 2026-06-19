@@ -18,7 +18,6 @@ let
   kernels = [
     pkgs.linuxPackages_latest
     pkgs.linuxPackages_7_0
-    pkgs.linuxPackages_6_18
   ];
 
   name_for = kernelPackages: "linux-${lib.replaceString "." "_" kernelPackages.kernel.version}";
