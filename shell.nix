@@ -25,6 +25,8 @@ pkgs.mkShell {
   nativeBuildInputs =
     rebpf.nativeBuildInputs
     ++ (with pkgs; [
+      clang-tools
+      rust-analyzer
       crate2nix
       mold
     ]);
