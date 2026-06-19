@@ -32,6 +32,7 @@ enum MatchKind : u8 {
   MATCH_KIND_FULL,
   MATCH_KIND_SUBSTR,
   MATCH_KIND_PREFIX,
+  __MATCH_KIND_MAX,
 };
 
 const char *MATCH_KIND_STRINGS[] = {

@@ -110,34 +110,44 @@ macro_rules! to_from_hashmap_or_default {
 
 #[macro_export]
 macro_rules! to_from_enum {
-    ($(#[$enum_item:meta])* enum $name:ident {
+    ($(#[$enum_item:meta])* enum $enum:ident {
         $(
+            $(#[[rename = $rename:literal]])*
+            $(#[[alias = $alias:literal]])*
             $(#[$item:meta])*
             $variant:ident,
         )*
     }) => {
         $(#[$enum_item])*
-        pub enum $name {
+        pub enum $enum {
             $(
                 $(#[$item])*
                 $variant,
             )*
         }
 
-        impl FromStr for $name {
+        impl FromStr for $enum {
             type Err = eyre::Error;
             fn from_str(s: &str) -> Result<Self, Self::Err> {
                 match s {
-                    $(stringify!($variant) => Ok(Self::$variant),)*
-                    _ => bail!("Unknown {}: {:?}. Expected one of: {}", stringify!($name), s, stringify!($($variant),*)),
+                    $(
+                    $($rename => Ok(Self::$variant),)*
+                    $($alias => Ok(Self::$variant),)*
+                    stringify!($variant) => Ok(Self::$variant),
+                    )*
+                    _ => bail!("Unknown {}: {:?}. Expected one of: {}", stringify!($enum), s, stringify!($($variant),*)),
                 }
             }
         }
 
-        impl Display for $name {
+        impl Display for $enum {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                #[allow(unreachable_patterns)]
                 let s = match self {
-                    $(Self::$variant => stringify!($variant),)*
+                    $(
+                    $(Self::$variant => $rename,)*
+                    Self::$variant => stringify!($variant),
+                    )*
                 };
                 f.write_str(s)
             }

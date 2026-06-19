@@ -82,6 +82,61 @@ pub async fn watch_reload(ctx: &'static Ctx) -> eyre::Result<()> {
                 .push_priority(0);
             sock.request(&req)?.recv_ack()?;
 
+            for m in &conf.borrow().matches.matches {
+                let (addr, addr_len) = match m.kind {
+                    Kind::ipv4 => {
+                        let Ok(addr) = m.pattern.parse::<Ipv4Addr>() else {
+                            continue;
+                        };
+                        (addr, 32)
+                    }
+                    Kind::ipv4_subnet => {
+                        let Ok(addr) = m.pattern.parse::<ipnet::Ipv4Net>() else {
+                            continue;
+                        };
+                        (addr.network(), addr.prefix_len())
+                    }
+                    _ => continue,
+                };
+
+                // ip rule add to <addr> table <mark> prio 0
+                // TODO: Consider setting up ip matches as routes
+                let mut req =
+                    rt_rule::Request::new()
+                        .set_create()
+                        .op_newrule_do(&rt_rule::FibRuleHdr {
+                            family: libc::AF_INET as u8,
+                            dst_len: addr_len,
+                            action: rt_rule::FrAct::ToTbl as u8,
+                            ..Default::default()
+                        });
+
+                match m.direction {
+                    Direction::redirect => {
+                        req.encode().push_table(new_mark);
+                    }
+                    Direction::bypass => {
+                        req.encode().push_table(libc::RT_TABLE_MAIN as u32);
+                    }
+                }
+
+                // if m.uid != 0 {
+                //     req.encode().push_uid_range(rt_rule::FibRuleUidRange {
+                //         start: m.uid,
+                //         end: m.uid,
+                //     });
+                // }
+
+                req.encode()
+                    .push_dst(addr.into())
+                    .push_priority(0)
+                    // fwmark with mask=0 doesn't do anything, we just use it as a marker
+                    .push_fwmark(new_mark)
+                    .push_fwmask(0);
+
+                sock.request(&req)?.recv_ack()?;
+            }
+
             // ip route add default dev <dev> table <mark>
             let mut req = rt_route::Request::new()
                 .set_create()
@@ -398,6 +453,9 @@ fn bpf_reload(bpf_ctx: &mut BpfCtx, conf: &State, enable: bool, mark: u32) {
                         Kind::substring => K::MATCH_KIND_SUBSTR,
                         Kind::full => K::MATCH_KIND_FULL,
                         Kind::prefix => K::MATCH_KIND_PREFIX,
+                        // TODO: The following kinds don't need to be included
+                        Kind::ipv4 => K::__MATCH_KIND_MAX,
+                        Kind::ipv4_subnet => K::__MATCH_KIND_MAX,
                     },
                     dir: match m.direction {
                         Direction::redirect => D::MATCH_DIR_REDIRECT,

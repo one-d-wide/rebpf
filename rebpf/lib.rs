@@ -107,6 +107,9 @@ to_from_enum! {
         substring,
         full,
         prefix,
+        ipv4,
+        #[[rename = "ipv4/subnet"]]
+        ipv4_subnet,
     }
 }
 
@@ -183,6 +186,26 @@ to_from_hashmap! {
 }
 
 impl Match {
+    pub fn try_parse(&self) -> eyre::Result<()> {
+        match self.kind {
+            Kind::basename | Kind::substring | Kind::full | Kind::prefix => {}
+            Kind::ipv4 => {
+                let _ = self.pattern.parse::<Ipv4Addr>()?;
+            }
+            Kind::ipv4_subnet => {
+                let _ = self.pattern.parse::<IpNet>()?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn is_per_process(&self) -> bool {
+        match self.kind {
+            Kind::basename | Kind::substring | Kind::full | Kind::prefix => true,
+            _ => false,
+        }
+    }
+
     pub fn applies_to(&self, r: &Match) -> bool {
         self.kind == r.kind
             && self.pattern == r.pattern
@@ -211,6 +234,8 @@ pub struct Matches {
 
 impl Matches {
     pub fn add(&mut self, new: Match) -> eyre::Result<()> {
+        new.try_parse()?;
+
         if self.matches.iter().any(|m| m.applies_to(&new)) {
             return Ok(());
         }
@@ -230,6 +255,9 @@ impl Matches {
     }
 
     pub fn replace(&mut self, from: Match, to: Match) -> eyre::Result<()> {
+        from.try_parse()?;
+        to.try_parse()?;
+
         let Some(pos) = self.matches.iter().position(|m| m.is_eq_to(&from)) else {
             bail!("No such match");
         };
@@ -247,6 +275,8 @@ impl Matches {
     }
 
     pub fn del(&mut self, new: Match) -> eyre::Result<()> {
+        new.try_parse()?;
+
         let Some(pos) = self.matches.iter().position(|m| m.is_eq_to(&new)) else {
             bail!("No such match");
         };
