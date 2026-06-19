@@ -91,6 +91,8 @@ struct ProcFdEntry {
   u32 _pad;
 };
 
+#define PATH_MAX 4096
+
 #define TASK_CACHE_MAX 1024
 typedef struct TaskId TaskId;
 struct TaskId {

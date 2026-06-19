@@ -72,19 +72,29 @@ static void dump_sock(struct __sk_buff *skb, const char *dir) {
 #define dump_sock(...)
 #endif
 
+struct {
+  __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+  __uint(max_entries, 1);
+  __uint(key_size, 4);
+  __uint(value_size, PATH_MAX);
+} path_buf SEC(".maps");
 
-static char PATH_BUF[4096];
 static char *read_path_buf(const struct file *file) {
-  const size_t sz = sizeof(PATH_BUF);
-  PATH_BUF[sz - 1] = '\0';
-  ssize_t off = sz - 1;
+  u32 i = 0;
 
-  int i;
+  char *buf = bpf_map_lookup_elem(&path_buf, &i);
+  if (!buf) {
+    return NULL;
+  }
+
+  buf[PATH_MAX - 1] = '\0';
+  ssize_t off = PATH_MAX - 1;
+
   const struct dentry *dent = file->f_path.dentry;
   struct bpf_dynptr ptr;
-  bpf_dynptr_from_mem(PATH_BUF, sizeof(PATH_BUF) - 1, 0, &ptr);
+  bpf_dynptr_from_mem(buf, PATH_MAX - 1, 0, &ptr);
 
-  bpf_for(i, 0, sizeof(PATH_BUF)) {
+  bpf_for(i, 0, PATH_MAX) {
     const char *name = (const char *)dent->d_name.name;
     ssize_t len = bpf_strlen(name);
     if (len < 0 || off <= 0) {
@@ -96,7 +106,7 @@ static char *read_path_buf(const struct file *file) {
     }
     off -= len;
 
-    // Make verifier happy
+    // Make the verifier happy
     bpf_probe_read_kernel_dynptr(&ptr, off, len, name);
 
     if (off <= 0) {
@@ -104,7 +114,7 @@ static char *read_path_buf(const struct file *file) {
     }
 
     off -= 1;
-    PATH_BUF[off] = '/';
+    buf[off] = '/';
 
     const struct dentry *par = dent->d_parent;
     if (par == NULL || dent == par) {
@@ -115,7 +125,7 @@ static char *read_path_buf(const struct file *file) {
     dent = par;
   }
 
-  return &PATH_BUF[off];
+  return &buf[off];
 }
 
 static void match_ctx_init(MatchCtx *ctx, u32 uid, const char *path) {

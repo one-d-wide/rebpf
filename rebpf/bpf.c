@@ -151,11 +151,14 @@ int reload_config(struct BpfConfig *conf) {
     goto err;
   }
 
+  struct bpf_dynptr strings;
+  bpf_dynptr_from_mem(STRINGS_BUF, STRINGS_BUF_MAX, 0, &strings);
+
   u32 off = 0;
   u32 i;
   bpf_for(i, 0, nmatches) {
     // Make verifier happy
-    if (i > MATCHES_BUF_MAX) {
+    if (i >= MATCHES_BUF_MAX) {
       goto err;
     }
     if (off >= STRINGS_BUF_MAX) {
@@ -167,8 +170,8 @@ int reload_config(struct BpfConfig *conf) {
       goto err;
     }
 
-    ssize_t len = bpf_probe_read_user_str(STRINGS_BUF + off,
-                                          STRINGS_BUF_MAX - off, match.pat);
+    int len = bpf_probe_read_user_str_dynptr(&strings, off,
+                                             STRINGS_BUF_MAX - off, match.pat);
     if (len <= 0) {
       goto err;
     }
