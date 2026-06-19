@@ -4,7 +4,7 @@ use log::{info, warn};
 use netlink_socket2::NetlinkSocket;
 use std::{
     fs::File,
-    io::{Read, Seek, Write},
+    io::{self, Read, Seek, Write},
     os::fd::AsRawFd,
     path::{Path, PathBuf},
     time::Duration,
@@ -63,6 +63,8 @@ async fn main() -> eyre::Result<()> {
 }
 
 async fn run(args: CliArgs) -> eyre::Result<()> {
+    check_kernel_version().ok();
+
     unsafe {
         bpf::bpf_init();
     }
@@ -247,4 +249,24 @@ async fn save_state(
         }
         i = (i + 1) % files.len();
     }
+}
+
+fn check_kernel_version() -> eyre::Result<()> {
+    unsafe {
+        let mut uts: libc::utsname = std::mem::zeroed();
+        if libc::uname(&raw mut uts) != 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+
+        let os = std::ffi::CStr::from_ptr(uts.sysname.as_ptr()).to_str()?;
+        let ver = std::ffi::CStr::from_ptr(uts.release.as_ptr()).to_str()?;
+
+        let (major, _) = ver.split_once('.').unwrap_or_default();
+        let major: u32 = major.parse()?;
+
+        if !os.eq_ignore_ascii_case("linux") || major < 7 {
+            warn!("Rebpf only support Linux 7.0 and later. Current {os} version is {ver}.");
+        }
+    }
+    return Ok(());
 }
