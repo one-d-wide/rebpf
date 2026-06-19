@@ -40,6 +40,8 @@ struct {
 } dns_ringbuf SEC(".maps");
 
 static bool needs_mark(struct task_struct *task, u32 uid);
+static bool needs_mark_shallow(struct task_struct *task, u32 uid);
+static bool needs_mark_descend(struct task_struct *task, u32 uid);
 static bool needs_mark_uncached(struct task_struct *task, u32 uid);
 
 SEC("cgroup/sock_create")
@@ -204,6 +206,16 @@ err:
   return 1;
 }
 
+inline static bool needs_mark(struct task_struct *task, u32 uid) {
+  //   if (CONFIG.check_parents) {
+  //     return needs_mark_descend(task, uid);
+  //   } else {
+  //     return needs_mark_shallow(task, uid);
+  //   }
+
+  return needs_mark_shallow(task, uid);
+}
+
 static bool needs_mark_shallow(struct task_struct *task, u32 uid) {
   TaskId taskid = {
       .pid = task->pid,
@@ -220,6 +232,44 @@ static bool needs_mark_shallow(struct task_struct *task, u32 uid) {
   bpf_map_update_elem(&task_cache, &taskid, &res, BPF_ANY);
 
   return res;
+}
+
+static bool needs_mark_uncached(struct task_struct *task, u32 uid) {
+  struct file *file = task->mm->exe_file;
+
+  if (!file) {
+    bpf_printk("task doesn't have a file %s", task->comm);
+    return false;
+  }
+
+  const char *path;
+  if (ONLY_BASENAME_MATCHES) {
+    path = (char *)file->f_path.dentry->d_name.name;
+  } else {
+    path = read_path_buf(file);
+  }
+
+  if (!path) {
+    bpf_printk("err path d path", task->comm);
+    return false;
+  }
+
+  MatchCtx ctx;
+  match_ctx_init(&ctx, uid, path);
+
+  bool res = false;
+  u32 i = 0;
+  bpf_for(i, 0, MIN(NMATCHES, ARRAY_LEN(MATCHES_BUF))) {
+    if ((res = match_ctx_match(&ctx, &MATCHES_BUF[i]) != 0)) {
+      break;
+    }
+  }
+
+  if (res) {
+    return MATCHES_BUF[i].dir == MATCH_DIR_REDIRECT;
+  }
+
+  return false;
 }
 
 // WIP. Scan current process and its parent processes for a match.
@@ -285,54 +335,6 @@ static bool needs_mark_descend(struct task_struct *task, u32 uid) {
   }
 
   return res;
-}
-
-inline static bool needs_mark(struct task_struct *task, u32 uid) {
-  //   if (CONFIG.check_parents) {
-  //     return needs_mark_descend(task, uid);
-  //   } else {
-  //     return needs_mark_shallow(task, uid);
-  //   }
-
-  return needs_mark_shallow(task, uid);
-}
-
-static bool needs_mark_uncached(struct task_struct *task, u32 uid) {
-  struct file *file = task->mm->exe_file;
-
-  if (!file) {
-    bpf_printk("task doesn't have a file %s", task->comm);
-    return false;
-  }
-
-  const char *path;
-  if (ONLY_BASENAME_MATCHES) {
-    path = (char *)file->f_path.dentry->d_name.name;
-  } else {
-    path = read_path_buf(file);
-  }
-
-  if (!path) {
-    bpf_printk("err path d path", task->comm);
-    return false;
-  }
-
-  MatchCtx ctx;
-  match_ctx_init(&ctx, uid, path);
-
-  bool res = false;
-  u32 i = 0;
-  bpf_for(i, 0, MIN(NMATCHES, ARRAY_LEN(MATCHES_BUF))) {
-    if ((res = match_ctx_match(&ctx, &MATCHES_BUF[i]) != 0)) {
-      break;
-    }
-  }
-
-  if (res) {
-    return MATCHES_BUF[i].dir == MATCH_DIR_REDIRECT;
-  }
-
-  return false;
 }
 
 SEC("cgroup_skb/ingress")

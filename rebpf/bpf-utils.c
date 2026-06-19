@@ -147,8 +147,7 @@ static void match_ctx_init(MatchCtx *ctx, u32 uid, const char *path) {
   };
 }
 
-static int match_ctx_match(const MatchCtx *ctx,
-                           const Match *match) {
+static int match_ctx_match(const MatchCtx *ctx, const Match *match) {
   if (match->uid != 0 && match->uid != ctx->uid) {
     bpf_printk("Comparing basename '%s': different uid", ctx->basename);
     return 0;
@@ -160,7 +159,7 @@ static int match_ctx_match(const MatchCtx *ctx,
   }
   const char *pat = STRINGS_BUF + off;
 
-  bpf_printk("Comparing basename '%s' against '%s'" , ctx->basename, pat);
+  bpf_printk("Comparing basename '%s' against '%s'", ctx->basename, pat);
 
   switch (match->kind) {
   case MATCH_KIND_BASENAME:
@@ -171,8 +170,7 @@ static int match_ctx_match(const MatchCtx *ctx,
   case MATCH_KIND_SUBSTR:
     return ctx->path_len >= match->pat_len && bpf_strstr(ctx->path, pat) >= 0;
   case MATCH_KIND_PREFIX:
-    return ctx->path_len >= match->pat_len &&
-           bpf_strstr(ctx->path, pat) == 0;
+    return ctx->path_len >= match->pat_len && bpf_strstr(ctx->path, pat) == 0;
   default:
     return 0;
   }
