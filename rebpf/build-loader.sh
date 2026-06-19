@@ -56,6 +56,11 @@ for src in $REBPF_SRC/*.c $REBPF_SRC/*.h; do
     echo "void bpf_init(); int main() { bpf_init(); }" >"$OUT_DIR"/main.c
     "$CLANG" $LIBS "$OUT_DIR"/bpf-load.o "$OUT_DIR"/main.c -o "$OUT_DIR"/bpf-load
     echo "Built $OUT_DIR/bpf-load"
+
+    echo "void pause(); void bpf_init(); int main() { bpf_init(); while (1) pause(); }" >"$OUT_DIR"/main-sleep.c
+    "$CLANG" $LIBS "$OUT_DIR"/bpf-load.o "$OUT_DIR"/main-sleep.c -o "$OUT_DIR"/bpf-load-sleep
+    echo "Built $OUT_DIR/bpf-load-sleep"
+
     break
   fi
 done
