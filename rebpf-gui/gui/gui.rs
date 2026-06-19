@@ -763,20 +763,24 @@ pub fn view(s: &State, _window: window::Id) -> Element<'_, M> {
         };
     }
 
-    fn scale_mono(n: f64) -> String {
-        if n < 1_000_000.0 {
+    fn scale_mono(n: f64, max: f64) -> String {
+        if max < 1_000_000.0 {
             format!("{: >6.2} KB/s", n / 1_000.0)
-        } else if n < 1_000_000_000.0 {
+        } else if max < 1_000_000_000.0 {
             format!("{: >6.2} MB/s", n / 1_000_000.0)
         } else {
             format!("{: >6.2} GB/s", n / 1_000_000_000.0)
         }
     }
 
+    let tx = s.stats.tx_bytes as f64;
+    let rx = s.stats.rx_bytes as f64;
+    let max = f64::max(tx, rx);
+
     let bar = row![
         column![
-            text(format!("TX: {} ", scale_mono(s.stats.tx_bytes as f64))).font(MONO),
-            text(format!("RX: {} ", scale_mono(s.stats.rx_bytes as f64))).font(MONO),
+            text(format!("TX: {} ", scale_mono(tx, max))).font(MONO),
+            text(format!("RX: {} ", scale_mono(rx, max))).font(MONO),
         ],
         space::horizontal().width(Fill),
         if !s.attached.attached {
