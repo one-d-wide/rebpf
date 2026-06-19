@@ -33,7 +33,9 @@ fn main() -> iced::Result {
 
     let logger_env =
         env_logger::Env::default().default_filter_or(if args.verbose { "info" } else { "warn" });
-    env_logger::Builder::from_env(logger_env).init();
+    env_logger::Builder::from_env(logger_env)
+        .filter_module("zbus", log::LevelFilter::Warn)
+        .init();
 
     let (m_tx, m_rx) = futures::channel::mpsc::unbounded();
     let (d_tx, d_rx) = futures::channel::mpsc::unbounded();
