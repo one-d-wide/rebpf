@@ -9,6 +9,7 @@ use zbus::{Connection, interface, message::Header};
 use zbus_polkit::policykit1::{AuthorityProxy, CheckAuthorizationFlags, Subject};
 
 use crate::{Config, Ctx, Match, Route, State, bpf};
+use rebpf::{Config, Ctx, Match, Route, State, bpf};
 
 async fn peer_uid(conn: &Connection, header: &Header<'_>) -> zbus::fdo::Result<u32> {
     let proxy = zbus::fdo::DBusProxy::new(conn).await?;
@@ -27,8 +28,6 @@ async fn auth_or_err(conn: &Connection, header: Header<'_>) -> zbus::fdo::Result
         .await?
         .check_authorization(
             &Subject::new_for_message_header(&header).unwrap(),
-            // TODO: NM may not always be installed
-            // "org.freedesktop.NetworkManager.settings.modify.system",
             "service.rebpf.modify.system",
             &std::collections::HashMap::new(),
             CheckAuthorizationFlags::AllowUserInteraction.into(),
@@ -51,6 +50,14 @@ async fn auth_or_err(conn: &Connection, header: Header<'_>) -> zbus::fdo::Result
 
 pub struct Item {
     pub ctx: &'static Ctx,
+}
+
+fn str_to_inval<S: ToString>(err: S) -> zbus::fdo::Error {
+    zbus::fdo::Error::InvalidArgs(err.to_string())
+}
+
+fn err_to_inval<E: Error>(err: E) -> zbus::fdo::Error {
+    zbus::fdo::Error::InvalidArgs(err.to_string())
 }
 
 fn eyre_to_inval(err: eyre::ErrReport) -> zbus::fdo::Error {
@@ -213,21 +220,30 @@ impl Item {
     }
 
     async fn get_stats(&self) -> HashMap<&str, String> {
-        let mut lock = self.ctx.bpf.lock().await;
-        if lock.stats_time.elapsed() > Duration::from_secs(1) {
-            unsafe {
-                let mut new_stats: bpf::Stats = std::mem::zeroed();
-                bpf::bpf_get_stats(&mut new_stats as *mut bpf::Stats);
-                lock.dtime_sec = new_stats.time_ns.wrapping_sub(lock.stats.time_ns) as f64 / 1e9;
-                lock.stats = new_stats;
+        let mut stats = self.ctx.stats.lock().await;
+        if stats.cur.time.elapsed() > Duration::from_secs(1) {
+            if let Err(err) =
+                crate::netlink::get_stats(&self.ctx.state.rx.borrow().to_dev, &mut stats)
+            {
+                debug!("Error getting stats: {err}");
+                *stats = Default::default();
             }
-            lock.stats_time = Instant::now();
+        }
+
+        let mut tx = stats.cur.tx_bytes.saturating_sub(stats.prev.tx_bytes);
+        let mut rx = stats.cur.rx_bytes.saturating_sub(stats.prev.rx_bytes);
+        let mut dt = stats.cur.time.duration_since(stats.prev.time).as_secs_f32();
+
+        if stats.prev.tx_bytes == 0 && stats.prev.rx_bytes == 0 {
+            tx = 0;
+            rx = 0;
+            dt = 0.0;
         }
 
         let mut res = HashMap::new();
-        res.insert("tx-bytes", format!("{}", lock.stats.tx_bytes));
-        res.insert("rx-bytes", format!("{}", lock.stats.rx_bytes));
-        res.insert("dtime-sec", format!("{}", lock.dtime_sec));
+        res.insert("tx-bytes", format!("{tx}"));
+        res.insert("rx-bytes", format!("{rx}"));
+        res.insert("dtime-sec", format!("{dt}",));
         res
     }
 
@@ -259,35 +275,16 @@ impl Item {
         }
 
         let mut fmt_dev = |p: &str, r: &Route| {
+            res.insert(format!("{p}is-up"), format!("{}", r.is_up));
             res.insert(format!("{p}ifname"), r.ifname.clone());
             res.insert(format!("{p}ifindex"), format!("{}", r.ifindex));
-            if let Some(addr) = &r.addr {
+            if let Some(addr) = r.addrs.first() {
                 res.insert(format!("{p}addr"), format!("{addr}"));
-            }
-            if let Some(m) = r.mac {
-                let mac = format!(
-                    "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-                    m[0], m[1], m[2], m[3], m[4], m[5],
-                );
-                res.insert(format!("{p}mac"), mac);
-            }
-            if let Some(addr) = r.nexthop_addr {
-                res.insert(format!("{p}nexthop-addr"), format!("{addr}"));
-            }
-            if let Some(m) = r.nexthop_mac {
-                let mac = format!(
-                    "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-                    m[0], m[1], m[2], m[3], m[4], m[5],
-                );
-                res.insert(format!("{p}nexthop-mac"), mac);
             }
         };
 
         let routes = c.routes_changed.rx.borrow();
-        if let Some(from) = routes.from.as_ref() {
-            fmt_dev("from-", from);
-        }
-        if let Some(to) = routes.to.as_ref() {
+        if let Some(to) = routes.as_ref() {
             fmt_dev("to-", to);
         } else {
             res.insert(format!("to-ifname"), c.state.rx.borrow().to_dev.clone());

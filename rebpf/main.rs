@@ -1,113 +1,25 @@
 use argh::FromArgs;
-use eyre::{Context, bail};
+use eyre::bail;
 use log::{info, warn};
-use serde::{Deserialize, Serialize};
+use netlink_socket2::NetlinkSocket;
 use std::{
-    collections::HashMap,
-    fmt::Display,
     fs::File,
     io::{Read, Seek, Write},
-    net::{IpAddr, Ipv4Addr},
-    os::{
-        fd::AsRawFd,
-        linux::net::SocketAddrExt,
-        unix::{
-            ffi::OsStrExt,
-            net::{SocketAddr, UnixStream},
-        },
-    },
+    os::fd::AsRawFd,
     path::{Path, PathBuf},
-    str::FromStr,
-    sync::Arc,
     time::Duration,
 };
 use tokio::{
+    signal::unix::SignalKind,
     sync::{Mutex, watch},
+    task::JoinHandle,
     time::Instant,
 };
-use zbus::{
-    Connection,
-    address::{self, transport},
-};
-
-#[allow(unused)]
-#[allow(non_camel_case_types)]
-#[allow(non_upper_case_globals)]
-mod bindings;
-use bindings as bpf;
 
 mod dbus;
-mod macros;
 mod netlink;
 
-struct Watch<T> {
-    tx: watch::Sender<T>,
-    rx: watch::Receiver<T>,
-}
-
-impl<T> Watch<T> {
-    fn new(val: T) -> Self {
-        let (tx, rx) = watch::channel(val);
-        Self { tx, rx }
-    }
-}
-
-impl<T: Default> Default for Watch<T> {
-    fn default() -> Self {
-        let (tx, rx) = watch::channel(T::default());
-        Self { tx, rx }
-    }
-}
-
-#[derive(Clone, Debug, Default)]
-struct Route {
-    ifindex: u32,
-    ifname: String,
-    mac: Option<[u8; 6]>,
-    nexthop_addr: Option<IpAddr>,
-    nexthop_mac: Option<[u8; 6]>,
-    addr: Option<IpAddr>,
-}
-
-#[derive(Clone, Debug, Default)]
-struct Routes {
-    from: Option<Route>,
-    to: Option<Route>,
-}
-
-struct BpfCtx {
-    dtime_sec: f64,
-    stats_time: Instant,
-    stats: bpf::Stats,
-
-    matches_time: Instant,
-    matches: Arc<String>,
-    ptr: usize,
-    len: u64,
-    cap: u64,
-}
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(default)]
-struct State {
-    enable: bool,
-    to_dev: String,
-    config: Config,
-    matches: Matches,
-    generation: u64,
-}
-
-struct Ctx {
-    conn: &'static Connection,
-    state: Watch<State>,
-    attached: Watch<bool>,
-    blocker: Watch<&'static str>,
-    to_changed: Watch<()>,
-    from_changed: Watch<()>,
-    routes_changed: Watch<Routes>,
-    do_reload: Watch<()>,
-    bpf: Mutex<BpfCtx>,
-}
+use rebpf::{BpfCtx, Ctx, Matches, State, Watch, bpf};
 
 #[derive(FromArgs)]
 /// Per-process network traffic redirection using eBPF.
@@ -116,18 +28,22 @@ struct CliArgs {
     /// start enabled
     #[argh(switch)]
     enable: bool,
+
     /// start disabled
     #[argh(switch)]
     disable: bool,
+
     /// state directory
     #[argh(option)]
     state_dir: Option<PathBuf>,
+
     /// verbose output, same as RUST_LOG=debug
     #[argh(switch)]
     verbose: bool,
 }
 
-fn main() -> eyre::Result<()> {
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> eyre::Result<()> {
     let args: CliArgs = argh::from_env();
 
     let logger_env =
@@ -136,14 +52,92 @@ fn main() -> eyre::Result<()> {
         .filter_module("zbus", log::LevelFilter::Warn)
         .init();
 
+    let res = run(args).await;
+    let mut code = 0;
+    if let Err(err) = res {
+        log::error!("{err:?}");
+        code = 1;
+    }
+    std::process::exit(code)
+}
+
+async fn run(args: CliArgs) -> eyre::Result<()> {
     unsafe {
         bpf::bpf_init();
     }
 
+    let conn = zbus::connection::Builder::system()?.build().await?;
+
+    let state = Watch::new(State {
+        enable: false,
+        to_dev: String::new(),
+        config: Default::default(),
+        matches: Matches::default(),
+        generation: 0,
+    });
+
+    let save_state_handle = load_state(&args, &state)?;
+
+    if args.enable && args.disable {
+        bail!("Can't simultaneously set --enable and --disable");
+    }
+    if (args.enable || args.disable) && state.rx.borrow().enable != args.enable {
+        state.tx.send_modify(|s| s.enable = args.enable);
+    }
+
+    let ctx = Ctx {
+        conn: Box::leak(Box::new(conn)),
+        attached: Default::default(),
+        state,
+        blocker: Default::default(),
+        to_changed: Default::default(),
+        from_changed: Default::default(),
+        routes_changed: Default::default(),
+        default_route_changed: Default::default(),
+        do_reload: Default::default(),
+        stats: Default::default(),
+        bpf: Mutex::new(BpfCtx {
+            mark: None,
+            matches_time: Instant::now(),
+            matches: Default::default(),
+            cstrings: Vec::with_capacity(bpf::STRINGS_BUF_MAX as usize),
+            cmatches: Vec::with_capacity(bpf::MATCHES_BUF_MAX as usize),
+            last_gen: 0,
+            ptr: 0,
+            len: 0,
+            cap: 0,
+        }),
+    };
+    let ctx = &*Box::leak(Box::new(ctx));
+
+    ctx.conn.object_server().at("/", dbus::Item { ctx }).await?;
+    ctx.conn.request_name("service.rebpf").await?;
+
+    ctx.to_changed.tx.send(()).unwrap();
+    ctx.from_changed.tx.send(()).unwrap();
+
+    let mut sock = NetlinkSocket::new();
+
+    let res = tokio::select! {
+        res = save_state_handle => res,
+        res = tokio::spawn(netlink::watch_reload(ctx)) => res,
+        res = tokio::spawn(netlink::watch_routes(ctx)) => res,
+        res = tokio::task::spawn_blocking(|| netlink::watch_multicast(ctx)) => res,
+    };
+
+    if let Some(mark) = ctx.bpf.lock().await.mark {
+        netlink::clear_rules(&mut sock, mark).ok();
+    }
+
+    res?
+}
+
+fn load_state(args: &CliArgs, state: &Watch<State>) -> eyre::Result<JoinHandle<eyre::Result<()>>> {
     let state_dir = args
         .state_dir
         .as_deref()
         .unwrap_or(Path::new("/var/lib/rebpf"));
+
     let _ = std::fs::create_dir(state_dir);
 
     let mut files = Vec::new();
@@ -166,132 +160,36 @@ fn main() -> eyre::Result<()> {
         }
     }
 
-    // TODO: Consider connecting to the bus as a regular user
-    let conn_uid = unsafe { libc::getuid() };
-    let conn = match zbus::Address::system()?.transport() {
-        address::Transport::Unix(unix) => {
-            let path = match unix.path() {
-                transport::UnixSocket::File(path) => SocketAddr::from_pathname(path)?,
-                transport::UnixSocket::Abstract(path) => {
-                    SocketAddr::from_abstract_name(path.as_bytes())?
-                }
-                t => bail!("Unknown dbus transport: {t}"),
-            };
-            UnixStream::connect_addr(&path).with_context(|| format!("Can't connect to {path:?}"))?
-        }
-        t => bail!("Unknown dbus transport: {t}"),
-    };
-
-    // Check sanity before dropping caps
-    if let Ok(iter) = std::fs::read_dir("/proc/self/task/") {
-        assert_eq!(iter.count(), 1);
+    if files.is_empty() {
+        return Ok(tokio::spawn(std::future::pending()));
     }
 
-    unsafe {
-        bpf::bpf_drop_caps();
-    }
+    let mut last_i = 0;
+    let mut last_gen = 0;
+    let mut buf = String::new();
+    for (i, (p, c)) in files.iter_mut().enumerate() {
+        buf.clear();
+        info!("Reading state file {p:?}");
+        c.read_to_string(&mut buf)?;
 
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("Failed building the Runtime")
-        .block_on(run(args, files, conn, conn_uid))
-}
-
-async fn run(
-    args: CliArgs,
-    mut files: Vec<(PathBuf, File)>,
-    conn: UnixStream,
-    conn_uid: u32,
-) -> eyre::Result<()> {
-    conn.set_nonblocking(true)?;
-    let conn = tokio::net::UnixStream::from_std(conn)?;
-    let conn = zbus::connection::Builder::unix_stream(conn)
-        .user_id(conn_uid)
-        .build()
-        .await?;
-
-    let state = Watch::new(State {
-        enable: false,
-        to_dev: String::new(),
-        config: Default::default(),
-        matches: Matches::default(),
-        generation: 0,
-    });
-
-    let mut save_state_handle = None;
-    if !files.is_empty() {
-        let mut last_i = 0;
-        let mut last_gen = 0;
-        let mut buf = String::new();
-        for (i, (p, c)) in files.iter_mut().enumerate() {
-            buf.clear();
-            info!("Reading state file {p:?}");
-            c.read_to_string(&mut buf)?;
-
-            let next: State = match serde_json::from_str(&buf) {
-                Ok(next) => next,
-                Err(err) => {
-                    warn!("Error parsing state file: {err}");
-                    continue;
-                }
-            };
-
-            if last_gen <= next.generation {
-                last_gen = next.generation;
-                last_i = i;
-                state.tx.send(next).unwrap();
+        let next: State = match serde_json::from_str(&buf) {
+            Ok(next) => next,
+            Err(err) => {
+                warn!("Error parsing state file: {err}");
+                continue;
             }
+        };
+
+        if last_gen <= next.generation {
+            last_gen = next.generation;
+            last_i = i;
+            state.tx.send(next).unwrap();
         }
-
-        let mut rx = state.rx.clone();
-        rx.mark_unchanged();
-        save_state_handle = Some(tokio::spawn(save_state(rx, files, last_i)));
-    };
-
-    if args.enable && args.disable {
-        bail!("Can't simultaneously set --enable and --disable");
-    }
-    if (args.enable || args.disable) && state.rx.borrow().enable != args.enable {
-        state.tx.send_modify(|s| s.enable = args.enable);
     }
 
-    let ctx = Ctx {
-        conn: Box::leak(Box::new(conn)),
-        attached: Default::default(),
-        state,
-        blocker: Default::default(),
-        to_changed: Default::default(),
-        from_changed: Default::default(),
-        routes_changed: Default::default(),
-        do_reload: Default::default(),
-        bpf: Mutex::new(BpfCtx {
-            dtime_sec: Default::default(),
-            stats_time: Instant::now(),
-            stats: unsafe { std::mem::zeroed() },
-            matches_time: Instant::now(),
-            matches: Default::default(),
-            ptr: 0,
-            len: 0,
-            cap: 0,
-        }),
-    };
-    let ctx = Box::leak(Box::new(ctx));
-
-    ctx.conn.object_server().at("/", dbus::Item { ctx }).await?;
-    ctx.conn.request_name("service.rebpf").await?;
-
-    ctx.to_changed.tx.send(()).unwrap();
-    ctx.from_changed.tx.send(()).unwrap();
-
-    tokio::select! {
-        res = tokio::spawn(netlink::watch_reload(ctx)) => res??,
-        res = tokio::spawn(netlink::watch_routes(ctx)) => res??,
-        res = tokio::task::spawn_blocking(|| netlink::watch_multicast(ctx)) => res??,
-        res = save_state_handle.unwrap_or_else(|| tokio::spawn(std::future::pending())) => res??,
-    };
-
-    Ok(())
+    let mut rx = state.rx.clone();
+    rx.mark_unchanged();
+    Ok(tokio::spawn(save_state(rx, files, last_i)))
 }
 
 async fn save_state(
@@ -317,140 +215,5 @@ async fn save_state(
             libc::ftruncate(files[i].1.as_raw_fd(), buf.len() as i64);
         }
         i = (i + 1) % files.len();
-    }
-}
-
-to_from_enum! {
-    #[derive(Clone, Debug, Default, PartialEq)]
-    #[derive(Serialize, Deserialize)]
-    #[allow(non_camel_case_types)]
-    enum Kind {
-        #[default]
-        basename,
-        substring,
-        full,
-        prefix,
-    }
-}
-
-to_from_enum! {
-    #[derive(Clone, Debug, Default, PartialEq)]
-    #[derive(Serialize, Deserialize)]
-    #[allow(non_camel_case_types)]
-    enum Direction {
-        #[default]
-        redirect,
-        bypass,
-    }
-}
-
-to_from_hashmap_or_default! {
-    #[derive(Clone, Debug, PartialEq)]
-    #[derive(Serialize, Deserialize)]
-    #[serde(default)]
-    struct Config {
-        => probe_ipv4_addr: Ipv4Addr,
-        => allow_lan: bool,
-        => spoof_dns: bool,
-        => spoof_dns_ipv4: Ipv4Addr,
-        => drop_egress_without_output: bool,
-    }
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            probe_ipv4_addr: "1.2.3.4".parse().unwrap(),
-            allow_lan: true,
-            spoof_dns: false,
-            spoof_dns_ipv4: "8.8.8.8".parse().unwrap(),
-            drop_egress_without_output: false,
-        }
-    }
-}
-
-to_from_hashmap! {
-    #[derive(Clone, Debug, Default, PartialEq)]
-    #[derive(Serialize, Deserialize)]
-    #[serde(default)]
-    struct Match {
-        pattern: String,
-        => kind: Kind,
-        => direction: Direction,
-        user: String,
-        => => uid: u32,
-    }
-}
-
-impl Match {
-    fn applies_to(&self, r: &Match) -> bool {
-        self.kind == r.kind
-            && self.pattern == r.pattern
-            && self.direction == r.direction
-            && (self.uid == 0
-                || self.uid == r.uid
-                || (!self.user.is_empty() && self.user == r.user))
-    }
-
-    fn is_eq_to(&self, r: &Match) -> bool {
-        self.kind == r.kind
-            && self.pattern == r.pattern
-            && self.direction == r.direction
-            && self.uid == r.uid
-            && self.user == r.user
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, Default)]
-struct Matches {
-    matches: Vec<Match>,
-    strings_len: usize,
-    generation: u64,
-}
-
-impl Matches {
-    fn add(&mut self, new: Match) -> eyre::Result<()> {
-        if self.matches.iter().any(|m| m.applies_to(&new)) {
-            return Ok(());
-        }
-
-        let new_len = self.strings_len + new.pattern.len() + 1;
-        if new_len >= bpf::STRINGS_BUF_MAX as usize
-            || self.matches.len() + 1 > bpf::MATCHES_BUF_MAX as usize
-        {
-            bail!("Not enough space for a new match");
-        }
-
-        self.strings_len = new_len;
-        self.matches.push(new);
-        self.generation += 1;
-        Ok(())
-    }
-
-    fn replace(&mut self, from: Match, to: Match) -> eyre::Result<()> {
-        let Some(pos) = self.matches.iter().position(|m| m.is_eq_to(&from)) else {
-            bail!("No such match");
-        };
-
-        let new_len = self.strings_len - self.matches[pos].pattern.len() + to.pattern.len();
-        if new_len >= bpf::STRINGS_BUF_MAX as usize {
-            bail!("Not enough space for a new match");
-        }
-
-        self.matches[pos] = to;
-        self.strings_len = new_len;
-        self.generation += 1;
-        Ok(())
-    }
-
-    fn del(&mut self, new: Match) -> eyre::Result<()> {
-        let Some(pos) = self.matches.iter().position(|m| m.is_eq_to(&new)) else {
-            bail!("No such match");
-        };
-
-        let old = self.matches.remove(pos);
-        self.strings_len -= old.pattern.len() + 1;
-        self.generation += 1;
-        Ok(())
     }
 }

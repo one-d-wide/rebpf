@@ -6,6 +6,8 @@
 #include <sys/capability.h>
 #include <sys/prctl.h>
 #include <sys/resource.h>
+#include <sys/socket.h>
+#include <sys/syscall.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -65,21 +67,75 @@ static void closep(int *ptr) {
   }
 }
 
+[[maybe_unused]]
+static void fclosep(FILE **ptr) {
+  if (*ptr) {
+    fclose(*ptr);
+  }
+}
+
+const u64 NS_IN_SEC = 1000000000;
+
 static struct bpf *skel = NULL;
 static struct {
-  struct bpf_link *ingress;
-  u32 ingress_ifindex;
-  struct bpf_link *egress;
-  u32 egress_ifindex;
-  struct bpf_link *cgroup_egress;
   int reload_config_fd;
-  int get_stats_fd;
   struct bpf_link *iter_file;
   int iter_file_fd;
   struct bpf_link *dump_socket_procs_file;
   int dump_socket_procs_fd;
   u64 last_gen;
+  u32 last_mark;
 } links = {0};
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+// Read starttime from /proc/<pid>/stat, see proc_pid_stat(5)
+u64 proc_get_start_time(pid_t pid) {
+  char path[64];
+  snprintf(path, sizeof(path), "/proc/%llu/stat", pid);
+
+  FILE *file _cleanup(fclosep) = fopen(path, "r");
+  if (!file) {
+    return 0;
+  }
+
+  char buf[1024];
+  if (!fgets(buf, sizeof(buf), file)) {
+    return 0;
+  }
+
+  const char *seek = strrchr(buf, ')');
+  for (int i = 0; *seek && i < 20; ++i) {
+    seek = strchr(seek + 1, ' ');
+  }
+
+  return strtoull(seek, NULL, 10) / sysconf(_SC_CLK_TCK);
+}
+
+const char *proc_set_mark(pid_t pid, u64 start_time, int fd, u32 fwmark) {
+  int pidfd _cleanup(closep) = syscall(SYS_pidfd_open, pid, 0);
+  if (pidfd < 0) {
+    return strerror(errno);
+  }
+
+  int cloned_fd _cleanup(closep) = syscall(SYS_pidfd_getfd, pidfd, fd, 0);
+  if (cloned_fd < 0) {
+    return strerror(errno);
+  }
+
+  if (proc_get_start_time(pid) != start_time) {
+    return "Mismatch in starttime";
+  }
+
+  int res = setsockopt(cloned_fd, SOL_SOCKET, SO_MARK, &fwmark, sizeof(fwmark));
+  if (res < 0) {
+    return strerror(errno);
+  }
+
+  return NULL;
+}
 
 void bpf_drop_caps() {
   if (getuid() == 0) {
@@ -112,13 +168,9 @@ void bpf_init() {
   EXPECT(bpf__load(skel) == 0);
   LOG("bpf__load() in %f seconds\n", (float)(clock() - s) / CLOCKS_PER_SEC);
 
-  int cgroup_fd;
+  int cgroup_fd _cleanup(closep) = -1;
   EXPECT((cgroup_fd = open("/sys/fs/cgroup/", O_RDONLY)) >= 0);
-  EXPECT((links.cgroup_egress = bpf_program__attach_cgroup(
-              skel->progs.cgroup_skb_egress, cgroup_fd)) != 0);
   EXPECT(bpf_program__attach_cgroup(skel->progs.cgroup_socket_create,
-                                    cgroup_fd) != 0);
-  EXPECT(bpf_program__attach_cgroup(skel->progs.cgroup_socket_release,
                                     cgroup_fd) != 0);
   EXPECT(links.iter_file =
              bpf_program__attach_iter(skel->progs.refresh_sockets, NULL));
@@ -129,10 +181,10 @@ void bpf_init() {
   links.dump_socket_procs_fd = bpf_link__fd(links.dump_socket_procs_file);
 
   links.reload_config_fd = bpf_program__fd(skel->progs.reload_config);
-  links.get_stats_fd = bpf_program__fd(skel->progs.get_stats);
+
+  EXPECT(bpf_program__attach_cgroup(skel->progs.ingress, cgroup_fd));
 
   EXPECT(setrlimit(RLIMIT_MEMLOCK, &rlim_old) == 0);
-  close(cgroup_fd);
 }
 
 void bpf_unload() {
@@ -148,68 +200,52 @@ void bpf_unload() {
 }
 
 int bpf_reload_config(BpfConfig *conf) {
-  if (conf->from_dev.ifindex != links.ingress_ifindex ||
-      conf->to_dev.ifindex != links.egress_ifindex || !links.egress ||
-      !links.ingress) {
-
-    bpf_unload();
-
-    EXPECT(conf->from_dev.ifindex != conf->to_dev.ifindex);
-
-    if (!(links.egress = bpf_program__attach_tcx(
-              skel->progs.egress, conf->from_dev.ifindex, NULL))) {
-      return 1;
-    }
-
-    links.ingress = bpf_program__attach_tcx(skel->progs.ingress,
-                                            conf->to_dev.ifindex, NULL);
-
-    links.ingress_ifindex = conf->from_dev.ifindex;
-    links.egress_ifindex = conf->to_dev.ifindex;
-  }
-
   struct bpf_test_run_opts run_opts = {
       .sz = sizeof(run_opts),
       .ctx_in = conf,
       .ctx_size_in = sizeof(*conf),
   };
 
-  conf->from_dev.is_ingress = true;
-  conf->to_dev.is_ingress = false;
-
   EXPECT(bpf_prog_test_run_opts(links.reload_config_fd, &run_opts) == 0);
   EXPECT0(run_opts.retval);
 
-  if (links.last_gen != conf->generation) {
-    links.last_gen = conf->generation;
-
-    int iter_fd;
-    EXPECT((iter_fd = bpf_iter_create(links.iter_file_fd)) >= 0);
-
-    int err;
-    char buf[64];
-    while ((err = read(iter_fd, &buf, sizeof(buf))) == -1 && errno == EAGAIN)
-      ;
-    EXPECT(err == 0);
-    close(iter_fd);
+  if (links.last_gen == conf->generation && links.last_mark == conf->mark) {
+    return 0;
   }
+
+  links.last_gen = conf->generation;
+  links.last_mark = conf->mark;
+
+  int iter_fd _cleanup(closep) = -1;
+  EXPECT((iter_fd = bpf_iter_create(links.iter_file_fd)) >= 0);
+
+  int err;
+  while (true) {
+    struct ProcFdEntry buf[64];
+    while ((err = read(iter_fd, buf, sizeof(buf))) == -1 && errno == EAGAIN)
+      ;
+
+    if (err <= 0) {
+      break;
+    }
+
+    for (size_t i = 0; i < err / sizeof(*buf); ++i) {
+      struct ProcFdEntry *ent = &buf[i];
+      const char *err = proc_set_mark(ent->pid, ent->start_boottime / NS_IN_SEC,
+                                      ent->fd, conf->mark);
+      if (err) {
+        ERROR("Setting fwmark on pid=%i fd=%i: %s", ent->pid, ent->fd, err);
+      }
+    }
+  }
+
+  EXPECT(err == 0);
 
   return 0;
 }
 
-void bpf_get_stats(Stats *stats) {
-  struct bpf_test_run_opts run_opts = {
-      .sz = sizeof(run_opts),
-      .ctx_in = stats,
-      .ctx_size_in = sizeof(*stats),
-  };
-
-  EXPECT0(bpf_prog_test_run_opts(links.get_stats_fd, &run_opts));
-  EXPECT0(run_opts.retval);
-}
-
 void bpf_get_proc_names(char **ptr, u64 *len, u64 *cap) {
-  int iter_fd;
+  int iter_fd _cleanup(closep) = -1;
   EXPECT((iter_fd = bpf_iter_create(links.dump_socket_procs_fd)) >= 0);
 
   *len = 1;
@@ -223,7 +259,6 @@ void bpf_get_proc_names(char **ptr, u64 *len, u64 *cap) {
   } while ((res = read(iter_fd, *ptr + *len - 1, *cap - *len)) > 0);
   (*ptr)[*len - 1] = '\0';
   EXPECT(res >= 0);
-  close(iter_fd);
 }
 
 static void iterate_map_batch(int map_fd, void *keys, size_t key_size,
@@ -281,7 +316,5 @@ void bpf_get_dump(Dump *dump) {
                       ARRAY_LEN(dump->field##_keys), &dump->field##_len);      \
   }
 
-  do_dump(skel->maps.socket_cache, socket);
   do_dump(skel->maps.task_cache, task);
-  do_dump(skel->maps.nat_cache, nat);
 }
