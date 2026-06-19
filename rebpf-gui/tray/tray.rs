@@ -19,7 +19,6 @@ pub async fn tray(m_tx: Tx<M>, d_tx: Tx<D>, mut t_rx: Rx<TrayState>) -> zbus::Re
     let state = Arc::new(Mutex::new(TrayState {
         state: Tray::NotConnected,
         theme: TrayTheme::Dark,
-        input_dev: String::new(),
         output_dev: String::new(),
         blocker: String::new(),
     }));
@@ -168,10 +167,9 @@ impl Item {
         } else {
             state.blocker.clone()
         };
-        let text = format!("{NAME}: {}", blocker);
-        let text = match (!state.input_dev.is_empty(), !state.output_dev.is_empty()) {
-            (true, true) => format!("{text} ({} -> {})", state.input_dev, state.output_dev),
-            _ => text,
+        let mut text = format!("{NAME}: {}", blocker);
+        if !state.output_dev.is_empty() {
+            text = format!("{text} ({})", state.output_dev)
         };
 
         ("", Vec::new(), text, "")

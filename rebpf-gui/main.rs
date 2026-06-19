@@ -4,7 +4,11 @@ use iced::{
     keyboard::{self, Key, key},
     window,
 };
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+    time::Duration,
+};
 use tokio::sync::Semaphore;
 use zbus::{Connection, proxy, proxy::CacheProperties, zvariant::OwnedValue};
 
@@ -188,17 +192,28 @@ async fn listen_proc_names(
 ) -> zbus::Result<()> {
     loop {
         let _guard = sema.acquire().await.unwrap();
-        let h = proxy.get_proc_names().await?;
-        m_tx.unbounded_send(M::ActiveProcs(
-            h.split('\n')
+
+        let mut set = HashSet::new();
+
+        if let Ok(records) = proxy.get_dns_records().await {
+            set.extend(records.into_iter().filter_map(|mut r| r.remove("name")));
+        }
+
+        set.extend(
+            proxy
+                .get_proc_names()
+                .await?
+                .split('\n')
                 .filter(|s| !s.is_empty())
-                .map(|s| s.to_string())
-                .collect(),
-        ))
-        .unwrap();
+                .map(|s| s.to_string()),
+        );
+
+        m_tx.unbounded_send(M::ActiveProcs(set)).unwrap();
+
         let h = proxy.get_stats().await?;
         m_tx.unbounded_send(M::Stats(Stats::from_hashmap(h)))
             .unwrap();
+
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
 }

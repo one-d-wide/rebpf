@@ -52,6 +52,8 @@ pub trait Ser {
     /// GetProcNames method
     fn get_proc_names(&self) -> zbus::Result<String>;
 
+    fn get_dns_records(&self) -> zbus::Result<Vec<HashMap<String, String>>>;
+
     /// Toggle method
     fn toggle(&self) -> zbus::Result<()>;
 

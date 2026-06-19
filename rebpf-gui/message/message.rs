@@ -102,7 +102,6 @@ pub struct TrayState {
     pub state: Tray,
     pub theme: TrayTheme,
     pub blocker: String,
-    pub input_dev: String,
     pub output_dev: String,
 }
 
@@ -124,12 +123,6 @@ to_from_hashmap! {
         to_ifname: String,
         to_ifindex: String,
         to_addr: String,
-        to_mac: String,
-
-        from_ifname: String,
-        from_ifindex: String,
-        from_mac: String,
-        from_addr: String,
     }
 }
 
@@ -162,11 +155,10 @@ impl Match {
     pub fn matches(&self, s: &str) -> bool {
         match self.kind.as_str() {
             "basename" => s.rsplit_once('/').map(|(_, r)| r).unwrap_or(s) == self.pattern,
-            "full" => self.pattern == s,
             "prefix" => s.strip_prefix(&self.pattern).is_some(),
-            "suffix" => s.strip_suffix(&self.pattern).is_some(),
             "substring" => s.contains(&self.pattern),
-            _ => false,
+            "dns" => self.pattern == s.trim_matches('.'),
+            _ => self.pattern == s,
         }
     }
 }

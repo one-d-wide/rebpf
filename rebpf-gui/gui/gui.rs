@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::net::Ipv4Addr;
 
 use message::{Attached, D, M, Match, Settings, Stats, Tray, TrayState, TrayTheme, Tx};
-use widgets::{container_hook, labeled_frame, modal};
+use widgets::{container_hook, modal};
 
 mod utils;
 
@@ -33,9 +33,15 @@ const MONO_BOLD: Font = Font {
     ..Font::DEFAULT
 };
 
-pub const KINDS: [&str; 4] = ["basename", "suffix", "prefix", "substring"];
-pub const KIND_DEFAULT: &str = KINDS[3];
-pub const KIND_UNKNOWN: &str = "unknown";
+pub const KINDS: [&str; 6] = [
+    "basename",
+    "substring",
+    "prefix",
+    "ipv4",
+    "ipv4/subnet",
+    "dns",
+];
+pub const KIND_DEFAULT: &str = KINDS[1];
 
 pub const THEME_DEFAULT: Theme = Theme::Dark;
 
@@ -322,7 +328,6 @@ pub fn update(s: &mut State, message: M) -> Task<M> {
                     },
                     theme: s.tray_theme,
                     blocker: s.attached.blocker.clone(),
-                    input_dev: s.attached.from_ifname.clone(),
                     output_dev: s.attached.to_ifname.clone(),
                 })
                 .unwrap();
@@ -383,7 +388,6 @@ pub fn update(s: &mut State, message: M) -> Task<M> {
                 .unbounded_send(TrayState {
                     state: Tray::NotConnected,
                     theme: s.tray_theme,
-                    input_dev: s.attached.from_ifname.clone(),
                     output_dev: s.attached.to_ifname.clone(),
                     blocker: s.attached.blocker.clone(),
                 })
@@ -439,34 +443,6 @@ pub fn view(s: &State, _window: window::Id) -> Element<'_, M> {
     };
 
     let overlay_active = s.modal_editor.is_some() || s.show_settings;
-
-    let dev_input = labeled_frame::LabeledFrame::new(
-        text("Input"),
-        container(
-            column![
-                row![
-                    text("Interface").width(Length::FillPortion(1)),
-                    text_input(LOADING, &s.attached.from_ifname)
-                        .width(Length::FillPortion(2))
-                        .style(text_input_style)
-                ]
-                .align_y(Vertical::Center)
-                .spacing(S),
-                row![
-                    text("Local IP").width(Length::FillPortion(1)),
-                    text_input(LOADING, &s.attached.from_addr)
-                        .width(Length::FillPortion(2))
-                        .style(text_input_style)
-                ]
-                .align_y(Vertical::Center)
-                .spacing(S),
-            ]
-            .spacing(S),
-        ),
-    )
-    .stroke_width(1)
-    .width(Fill)
-    .height(Shrink);
 
     let button_style = |t: &Theme, s: button::Status| {
         let mut p = button::primary(t, s);
@@ -543,41 +519,37 @@ pub fn view(s: &State, _window: window::Id) -> Element<'_, M> {
             .on_dismiss(M::ModalDismiss)
             .alignment(drop_down::Alignment::Bottom);
 
-    let output_dev = labeled_frame::LabeledFrame::new(
-        text("Output"),
-        column![
+    let output_dev = column![
+        row![
             row![
-                row![
-                    text("Interface").width(Length::FillPortion(1)),
-                    output_devs_search,
-                ]
-                .align_y(Vertical::Center)
-                .spacing(S),
-                container(
-                    float(
-                        text(if !overlay_active { "<" } else { "" })
-                            .wrapping(text::Wrapping::None)
-                            .align_x(Horizontal::Right)
-                            .align_y(Vertical::Center)
-                    )
-                    .translate(|_, _| iced::Vector { x: -S, y: 0.0 })
-                )
-                .max_width(0)
-            ]
-            .align_y(Vertical::Center),
-            row![
-                text("Local IP").width(Length::FillPortion(1)),
-                text_input(LOADING, &s.attached.to_addr)
-                    .width(Length::FillPortion(2))
-                    .style(text_input_style)
+                text("Interface").width(Length::FillPortion(1)),
+                output_devs_search,
             ]
             .align_y(Vertical::Center)
             .spacing(S),
+            container(
+                float(
+                    text(if !overlay_active { "<" } else { "" })
+                        .wrapping(text::Wrapping::None)
+                        .align_x(Horizontal::Right)
+                        .align_y(Vertical::Center)
+                )
+                .translate(|_, _| iced::Vector { x: -S, y: 0.0 })
+            )
+            .max_width(0)
         ]
+        .align_y(Vertical::Center),
+        row![
+            text("Local IP").width(Length::FillPortion(1)),
+            text_input(LOADING, &s.attached.to_addr)
+                .width(Length::FillPortion(2))
+                .style(text_input_style)
+        ]
+        .align_y(Vertical::Center)
         .spacing(S),
-    )
-    .stroke_width(1)
-    .width(Fill)
+    ]
+    .spacing(S)
+    .padding(S)
     .height(Shrink);
 
     fn dir(d: &str) -> &'static str {
@@ -755,7 +727,7 @@ pub fn view(s: &State, _window: window::Id) -> Element<'_, M> {
         )
         .padding(Padding::new(S).top(S / 4.0)),
     )
-    .padding(Padding::new(S).top(S / 4.0));
+    .padding(Padding::new(S).top(0));
 
     let theme = s.theme.as_ref().unwrap_or(&THEME_DEFAULT);
     let mut status_color = theme.palette().text;
@@ -802,23 +774,23 @@ pub fn view(s: &State, _window: window::Id) -> Element<'_, M> {
     }
 
     let bar = row![
-        container_hook::Container::new(text(status).color(status_color))
-            .show_clickable(s.dbus_conn_err.is_some() && s.modal_editor.is_none())
-            .on_click(M::StatusShow),
+        column![
+            text(format!("TX: {} ", scale_mono(s.stats.tx_bytes as f64))).font(MONO),
+            text(format!("RX: {} ", scale_mono(s.stats.rx_bytes as f64))).font(MONO),
+        ],
         space::horizontal().width(Fill),
-        text(format!(
-            "TX: {}    RX: {}",
-            scale_mono(s.stats.tx_bytes as f64),
-            scale_mono(s.stats.rx_bytes as f64)
-        ))
-        .font(MONO),
-        space::horizontal().width(S * 3.0),
         if !s.attached.attached {
             button("Enable")
         } else if !s.attached.enabled {
-            button("> Enable").on_press(M::Enable)
+            button("Enable").on_press(M::Enable)
         } else {
-            button("Disable").on_press(M::Disable)
+            button("Disable")
+                .on_press(M::Disable)
+                .style(|t: &Theme, s: button::Status| {
+                    let mut p = button::primary(t, s);
+                    p.background = Some(t.extended_palette().danger.weak.color.into());
+                    p
+                })
         },
         space::horizontal().width(S),
         button(svg(icons::settings(s.tray_theme)))
@@ -828,15 +800,20 @@ pub fn view(s: &State, _window: window::Id) -> Element<'_, M> {
             .padding(Padding::new(S))
             .style(button_style),
     ]
-    .align_y(VCENTER)
+    .align_y(VCENTER);
+
+    let status_text =
+        container(text(status).font(MONO).color(status_color)).padding(Padding::default());
+    let status = column![
+        bar,
+        container_hook::Container::new(status_text)
+            .show_clickable(s.dbus_conn_err.is_some() && s.modal_editor.is_none())
+            .on_click(M::StatusShow),
+    ]
+    .align_x(Horizontal::Left)
     .padding(Padding::default().horizontal(S).vertical(S / 2.0));
 
-    let content = column![
-        bar,
-        row![dev_input, output_dev].spacing(S),
-        space::vertical().height(S),
-        patterns
-    ];
+    let content = column![row![output_dev, status].spacing(S).padding(S), patterns];
 
     if let Some(t) = &s.modal_editor {
         let popup = container(column![
