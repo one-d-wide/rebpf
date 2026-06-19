@@ -9,7 +9,8 @@
 
 ## Features
 
-- Redirect traffic of specific applications to a specific interface, e.g. in or around a VPN.
+- Redirect traffic of a specific applications, IP or DNS address to a specific
+interface, e.g. in or around a VPN.
 - Without affecting the network configuration of any other program.
 - Instantly changing settings through the GUI app, no need to restart your apps!
 - Using D-Bus interface for integrations and CLI.
@@ -100,68 +101,48 @@ sweep existing sockets using [`iter/task_file`].
 [`cgroup/sock_create`]: https://docs.ebpf.io/linux/program-type/BPF_PROG_TYPE_CGROUP_SOCK
 [`iter/task_file`]: https://docs.ebpf.io/linux/program-type/BPF_PROG_TYPE_TRACING
 
-Once we've obtained a socket, the most convenient method to redirect traffic
-would be to use socket marks to tell the existing kernel routing code to
-redirect it to where it needs to go. A privileged userspace application can set
-a 32bit SO_MARK on its socket which in turn could be matched dedicated firewall
-rules or routing tables, allowing routing such packet via a dedicated
-interface. Stateful connection tracking is already there, needed for the
-correct treatment of ingress packets.
+Once we have a socket, the most convenient method to redirect traffic is to
+tell the existing kernel code to do it. A privileged userspace application can
+set an arbitrary 32bit [SO_MARK] on its sockets which in turn could be picked
+up by dedicated firewall and routing rules. In this case, stateful connection
+tracking, needed to correctly associate the ingress packets with the socket, is
+already done by the kernel.
 
-But there is a problem. We can't just set a mark for an arbitrary userspace
-program's socket from an eBPF program (or even from a userspace daemon). As you
-already know, eBPF programs are only allowed to modify kernel state in places
-where the program type is explicitly allows it to. And, unfortunately, as of
-Linux 7.0 eBPF programs can only set marks on TCP sockets for already existing
-sockets, missing out on UDP and raw IP sockets, used by ping command to send
-ICMP messages, which is unacceptable.
+[SO_MARK]: https://www.man7.org/linux/man-pages/man7/socket.7.html
 
-Instead of marking a socket, we could try marking individual packets leaving a
-socket, as they still can be traced to the originating socket. Unfortunately,
-again, all the hooks on this path are either triggered after a route has
-already been selected by Netfilter, or barred from modifying any socket state
-like [Netfilter hook].
+During normal operation the eBPF program can set socket marks on a newly
+created sockets using [bpf_setsockopt()] available to [`cgroup/sock_create`]
+programs. While during startup or after a change in configuration, it can
+iterate over all the opened sockets using [`iter/task_file`] and send matched
+process's info to the userspace daemon which can use [pidfd_getfd(2)] syscall
+to set a mark on an already existing socket.
 
-[netfilter hook]: https://docs.ebpf.io/linux/program-type/BPF_PROG_TYPE_NETFILTER
+[bpf_setsockopt()]: https://docs.ebpf.io/linux/helper-function/bpf_setsockopt/
+[pidfd_getfd(2)]: https://www.man7.org/linux/man-pages/man2/pidfd_getfd.2.html
 
-Thus, the we have to resort to redirecting packets ourselves, which is ugly and
-error prone as we have to patch up payloads of l2 (ethernet src/dst mac), l3
-(ip src/dst addresses, checksum), and even l4 (udp and tcp checksums). While
-being unable to use kernel connection state tracking (conntrack), and ARP
-neighbor discovery.
+The network configuration is dynamic. When a network device disappears, its
+routing entries are removed automatically and need to be reconfigured when the
+device reappears. Linux notifies userspace of the changes in network
+configuration using multicast netlink. The daemon listens to these changes to
+know when to update the routing rules, especially when Rebpf is configured to
+allow LAN connectivity and has to actively mirror the state of the main routing
+table for selected processes.
 
-So far our program pipeline looks as follows:
+IP-based redirection is straightforward, the daemon simply creates the
+corresponding routing entries for them. Matching DNS addresses is more
+involved. When it's required, eBPF program checks ingress packets using
+[`tcx/ingress`] program and copies ones that look like originating from a DNS
+resolver into the userspace for processing. The daemon does the parsing and
+maintains the corresponding routing entries.
 
-- [`syscall`] - Read configuration from userspace, prune the list of tracked sockets.
-- [`iter/task_file`] - Sweep through all open sockets and check the processes holding it.
-- [`tcx/egress`] - Redirect all egress traffic from the tracked sockets to another user-specified interface.
-- [`tcx/ingress`] - Same thing, but redirect ingress traffic.
-
-[`syscall`]: https://docs.ebpf.io/linux/program-type/BPF_PROG_TYPE_SYSCALL
-[`iter/task_file`]: https://docs.ebpf.io/linux/program-type/BPF_PROG_TYPE_TRACING
-[`tcx/egress`]: https://docs.ebpf.io/linux/program-type/BPF_PROG_TYPE_SCHED_ACT
 [`tcx/ingress`]: https://docs.ebpf.io/linux/program-type/BPF_PROG_TYPE_SCHED_ACT
-
-To actually redirect a packet it's not enough to know only the interface name.
-We have to also keep track of a route it's going to take. For an egress
-interface, i.e. the interfaces with the default internet connection, the
-required parameters are: ifindex, mac address (l2), ip address (l3), and a mac
-address of the next hop, i.e. a mac address of a router. And similarly for the
-ingress device.
-
-Moreover, all of these attributes can and will change during the normal
-operation, for example, simply disconnecting your device from a network would
-remove the output device. Linux notifies userspace of such changes using
-multicast netlink messages. We track changes in: interfaces, ip adresses, and
-mac addresses of neighboring devices.
-
-A Rebpf daemon watches these changes and updates the eBPF program with new
-configuration when needed.
 
 </details>
 
 
 ## Installation
+
+Rebpf requires Linux kernel v7.0 or later.
 
 - Manual
   ```sh
@@ -204,6 +185,7 @@ configuration when needed.
 
 ## Contributing
 
+- `RUST_LOG=debug` or `--verbose` enables debug-logging.
 - All required dev packages are collected in [./shell.nix], run `nix-shell` to
 fetch them.
 - When ran manually, [./rebpf/build-loader.sh] builds the eBPF program in
@@ -212,13 +194,65 @@ fetch them.
 verifier accepts it.
 - The nix package requires `./Cargo.nix` to be kept in sync with `Cargo.lock`
 using [crate2nix], see [./scripts/update.sh].
-- Build with `--features=bpf-trace` to enable debug output in
+- Build with `--features=bpf-trace` to enable eBPF debug output in
 `/sys/kernel/debug/tracing/trace_pipe`.
 
 [./shell.nix]: ./shell.nix
 [./rebpf/build-loader.sh]: ./rebpf/build-loader.sh
 [crate2nix]: https://github.com/nix-community/crate2nix
 [./scripts/update.sh]: ./scripts/update.sh
+
+Rebpf manipulates [ip-rule(8)] and [ip-route(8)] entries to redirect traffic.
+Here's a quick fish script to display a combined view of all routing rules with
+the corresponding tables in order of decreasing priority.
+
+[ip-rule(8)]: https://www.man7.org/linux/man-pages/man8/ip-rule.8.html
+[ip-route(8)]: https://www.man7.org/linux/man-pages/man8/ip-route.8.html
+
+<details>
+<summary>Script. <i>Click to unfold.</i></summary>
+
+```fish
+#!/usr/bin/env fish
+
+function ipr
+    set -l visited_tables
+
+    echo "Routing entries in order of decreasing priority"
+    ip $argv rule list | while read -Ll line
+        set -l table_id (string replace -r ".*\s" "" -- $line)
+        set -a visited_tables $table_id
+        set -l prio (string replace -r ":.*" "" -- $line)
+        set -l rule (string replace -r "^\S*:\s*" "" -- $line | string replace -r "\s*lookup\s*\S*\$" "")
+        echo
+        echo PRIO: $prio, RULE: $rule, TABLE: $table_id
+        switch $table_id
+            case unicast blackhole unreachable prohibit nat
+                echo $table_id
+            case "*"
+                ip -color=always $argv route show table $table_id
+        end | while read -Ll line
+            echo "    $line"
+        end
+    end
+
+    ip $argv route show table all | while read -Ll line
+        set -l table_id (string replace -fr "(.* )?table (\S+)( .*)?" "\$2" -- $line)
+        switch $table_id
+            case "" $visited_tables
+                continue
+        end
+        set -a visited_tables $table_id
+        echo
+        echo ORPHANED TABLE: $table_id
+        ip -color=always $argv route show table $table_id | while read -Ll line
+            echo "    $line"
+        end
+    end
+end
+```
+
+</details>
 
 ## License
 
