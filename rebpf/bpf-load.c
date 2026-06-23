@@ -96,15 +96,25 @@ u64 proc_get_start_time(pid_t pid) {
   char path[64];
   snprintf(path, sizeof(path), "/proc/%llu/stat", pid);
 
-  FILE *file _cleanup(fclosep) = fopen(path, "r");
-  if (!file) {
+  int fd _cleanup(closep) = open(path, O_RDONLY, 0);
+  if (fd < 0) {
     return 0;
   }
 
   char buf[1024];
-  if (!fgets(buf, sizeof(buf), file)) {
-    return 0;
+  size_t len = 0;
+  ssize_t res;
+
+  while ((res = read(fd, buf + len, sizeof(buf) - len))) {
+    if (res < 0 && errno == EINTR) {
+      continue;
+    }
+    if (res < 0) {
+      return 0;
+    }
+    len += res;
   }
+  buf[len] = '\0';
 
   const char *seek = strrchr(buf, ')');
   for (int i = 0; *seek && i < 20; ++i) {
