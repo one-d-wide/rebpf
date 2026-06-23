@@ -327,49 +327,20 @@ int ingress(struct __sk_buff *skb) {
     return 1;
   }
 
-  void *dns = udp + 1;
+  void *dns = (void *)(udp + 1);
   u32 dns_len = data_end - dns;
-  u32 dns_off_base = dns - data;
   u32 dns_off = dns - data;
 
-  // Make the verifier happy. IP doesn't allow this huge payloads anyway.
-  if (dns_len > 65536) {
-    return 1;
-  }
+  struct bpf_dynptr ptr_ring = {};
+  struct bpf_dynptr ptr_skb = {};
 
-  struct bpf_dynptr ptr = {};
+  bpf_ringbuf_reserve_dynptr(&dns_ringbuf, dns_len, 0, &ptr_ring);
 
-#define BLOCK 512 // Max size of a DNS packet without extensions
-#define ALIGN_UP(x, align_to) (((x) + ((align_to) - 1)) & ~((align_to) - 1))
+  bpf_dynptr_from_skb(skb, 0, &ptr_skb);
 
-  if (bpf_ringbuf_reserve_dynptr(&dns_ringbuf, ALIGN_UP(dns_len, BLOCK), 0,
-                                 &ptr) < 0) {
-    goto out;
-  }
+  bpf_dynptr_copy(&ptr_ring, 0, &ptr_skb, dns_off, dns_len);
 
-  // Copy a large packet in blocks.
-  // bpf_dynptr_read() isn't allowed to access skb data,
-  // while bpf_dynptr_data() can't map a variable size blocks.
-  while (dns_len >= BLOCK) {
-    void *block = bpf_dynptr_data(&ptr, dns_off - dns_off_base, BLOCK);
-    if (!block) {
-      goto out;
-    }
-    bpf_skb_load_bytes(skb, dns_off, block, BLOCK);
-    dns_off += BLOCK;
-    dns_len -= BLOCK;
-  }
-
-  if (dns_len > 0) {
-    void *block = bpf_dynptr_data(&ptr, dns_off - dns_off_base, BLOCK);
-    if (!block) {
-      goto out;
-    }
-    bpf_skb_load_bytes(skb, dns_off, block, dns_len);
-  }
-
-out:
-  bpf_ringbuf_submit_dynptr(&ptr, 0);
+  bpf_ringbuf_submit_dynptr(&ptr_ring, 0);
 
   return 1;
 }
