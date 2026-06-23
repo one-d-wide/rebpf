@@ -3,17 +3,22 @@
 
 #ifdef BINDGEN
 #include <stdbool.h>
-#include <stdint.h>
 #include <stddef.h>
+#include <stdint.h>
 #define NULL (void *)0
 #endif // BINDGEN
 
 #ifndef BINDGEN
 
+#define ALIGN_UP(x, align_to) (((x) + ((align_to) - 1)) & ~((align_to) - 1))
 #define ARRAY_LEN(arr) sizeof((arr)) / sizeof((arr)[0])
 #define MIN(l, r) ((l) < (r) ? (l) : (r))
 
 #endif // BINDGEN
+
+#define PAGE_SIZE 4096
+#define DFA_MAX_SIZE (1ull << 20) // ~1MB
+#define ARENA_SIZE (1ull << 21) // ~2MB
 
 #define DESCEND_MAX 1024
 #define MATCHES_BUF_MAX 128  // Match structs
@@ -60,13 +65,13 @@ struct MatchStr {
   char *pat;
 };
 
-typedef struct Match Match;
-struct Match {
-  u8 kind;
-  u8 dir;
-  u32 uid;
-  u32 pat_off;
-  u32 pat_len; // not counting null
+typedef struct DFA DFA;
+struct DFA {
+  u32 dfa_off;
+  u32 start;
+  u16 eoi;
+  u32 fin_min;
+  u32 fin_max;
 };
 
 typedef struct BpfConfig BpfConfig;
@@ -79,6 +84,10 @@ struct BpfConfig {
   u32 nmatches;
   u32 strings_len;
   MatchStr *matches;
+
+  void *arena_buf;
+  u32 arena_buf_len;
+  u32 arena_npages;
 
   u64 generation; // Incremented each time matches change
 };

@@ -1,5 +1,6 @@
 use eyre::{bail, eyre};
-use log::{debug, trace};
+use log::{debug, log_enabled, trace};
+use netlink_bindings::utils;
 use regex_automata::{
     Anchored,
     dfa::{
@@ -11,7 +12,7 @@ use regex_automata::{
 };
 use std::collections::HashSet;
 
-use crate::bpf;
+use crate::{Direction, Matches, bpf};
 
 type State = u32;
 const DEAD: usize = 0;
@@ -208,4 +209,96 @@ pub fn extract(dfa: &dense::DFA<Vec<u32>>, anchored: Anchored) -> eyre::Result<D
         stride: dfa.stride(),
         start: start.as_usize() as State,
     })
+}
+
+pub fn encode_dfa(
+    pats: &[String],
+    arena: &mut Vec<u8>,
+    pat_id_map: &[usize],
+    matches: &Matches,
+) -> eyre::Result<bpf::DFA> {
+    let dfa = extract_dfa(pats)?;
+
+    trace!("dfa::DFA: {dfa:?}");
+
+    utils::align(arena);
+
+    let dfa_off = arena.len() as u32;
+    assert_eq!(dfa.ec_table.len(), 256);
+
+    arena.extend_from_slice(&dfa.ec_table);
+    arena.reserve(dfa.trans.len() * STATE_SIZE);
+    for t in &dfa.trans {
+        arena.extend(t.to_ne_bytes());
+    }
+
+    utils::align(arena);
+
+    let table_len = dfa.pats.iter().map(|p| p.len()).sum();
+    let mut redirect_table = Vec::with_capacity(table_len);
+    let mut uid_table = Vec::with_capacity(table_len);
+    let mut match_id_table = Vec::with_capacity(table_len);
+
+    let match_slices_off = arena.len() as u32;
+    arena.reserve(dfa.pats.len() * STATE_SIZE);
+
+    for pats in &dfa.pats {
+        assert_eq!(uid_table.len(), match_id_table.len());
+
+        let off = uid_table.len() as u32;
+        let len = pats.len() as u32;
+
+        for &pat_id in pats {
+            let m_id = pat_id_map[pat_id as usize];
+            let m = &matches.matches[m_id];
+            redirect_table.push(match m.direction {
+                Direction::bypass => 0u8,
+                Direction::redirect => 1u8,
+            });
+            uid_table.push(m.uid);
+            match_id_table.push(m_id as u32);
+        }
+
+        arena.extend(off.to_ne_bytes());
+        arena.extend(len.to_ne_bytes());
+    }
+
+    let redirect_table_off = arena.len() as u32;
+    for val in &redirect_table {
+        arena.extend(val.to_ne_bytes());
+    }
+
+    let uid_table_off = arena.len() as u32;
+    for val in &uid_table {
+        arena.extend(val.to_ne_bytes());
+    }
+
+    let match_id_table_off = arena.len() as u32;
+    for val in &match_id_table {
+        arena.extend(val.to_ne_bytes());
+    }
+
+    if log_enabled!(log::Level::Trace) {
+        dbg!(&dfa.pats, &redirect_table, &uid_table, &match_id_table);
+    }
+
+    let dfa = bpf::DFA {
+        dfa_off,
+        start: dfa.start,
+        eoi: dfa.eoi_class,
+        fin_min: dfa.fin_min,
+        fin_max: dfa.fin_max,
+        match_slices_off,
+        redirect_table_off,
+        match_id_table_off,
+        uid_table_off,
+    };
+
+    debug!("bpf::DFA: {dfa:?}");
+    if log_enabled!(log::Level::Trace) {
+        debug!("Dumping {} bytes of bpf::DFA:", arena.len());
+        netlink_bindings::utils::dump_hex(&arena[..]);
+    }
+
+    Ok(dfa)
 }

@@ -67,14 +67,7 @@ static void closep(int *ptr) {
   }
 }
 
-[[maybe_unused]]
-static void fclosep(FILE **ptr) {
-  if (*ptr) {
-    fclose(*ptr);
-  }
-}
-
-const u64 NS_IN_SEC = 1000000000;
+const u64 NS_PER_SEC = 1000000000;
 
 static struct bpf *skel = NULL;
 static struct {
@@ -213,6 +206,8 @@ void bpf_run_dns_ringbuf(int (*callback)(void *ctx, void *data, size_t data_sz),
 }
 
 int bpf_reload_config(BpfConfig *conf) {
+  conf->arena_npages = ALIGN_UP(conf->arena_buf_len, PAGE_SIZE) / PAGE_SIZE;
+
   struct bpf_test_run_opts run_opts = {
       .sz = sizeof(run_opts),
       .ctx_in = conf,
@@ -222,12 +217,19 @@ int bpf_reload_config(BpfConfig *conf) {
   EXPECT(bpf_prog_test_run_opts(links.reload_config_fd, &run_opts) == 0);
   EXPECT0(run_opts.retval);
 
-  if (links.last_gen == conf->generation && links.last_mark == conf->mark) {
+  if (links.last_gen == conf->generation) {
     return 0;
   }
-
   links.last_gen = conf->generation;
-  links.last_mark = conf->mark;
+
+  skel->bss->HAS_DFA = conf->has_dfa;
+  skel->bss->MASTER_DFA = conf->dfa;
+
+  if (conf->arena_buf_len && skel->bss->BASE) {
+    EXPECT(conf->arena_buf);
+    EXPECT(conf->arena_buf_len <= ARENA_SIZE);
+    memcpy(skel->bss->BASE, conf->arena_buf, conf->arena_buf_len);
+  }
 
   int iter_fd _cleanup(closep) = -1;
   EXPECT((iter_fd = bpf_iter_create(links.iter_file_fd)) >= 0);
@@ -244,8 +246,8 @@ int bpf_reload_config(BpfConfig *conf) {
 
     for (size_t i = 0; i < err / sizeof(*buf); ++i) {
       struct ProcFdEntry *ent = &buf[i];
-      const char *err = proc_set_mark(ent->pid, ent->start_boottime / NS_IN_SEC,
-                                      ent->fd, conf->mark);
+      const char *err = proc_set_mark(
+          ent->pid, ent->start_boottime / NS_PER_SEC, ent->fd, conf->mark);
       if (err) {
         ERROR("Setting fwmark on pid=%i fd=%i: %s", ent->pid, ent->fd, err);
       }
