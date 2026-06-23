@@ -1,10 +1,17 @@
+// wtf is going on here
+
 #[macro_export]
 macro_rules! to_from_hashmap {
     (
         $(#[$struct_item:meta])*
         struct $name:ident {
             $(
-                $(#[$item:meta])* $($field:ident)*$(=> $afield:ident)*$(=> => $dfield:ident)*: $type:ty,
+                $(#[$item:meta])*
+                    $($field:ident)*
+                    $(=> $afield:ident)*
+                    $(=> => $dfield:ident)*
+                    $(=> => => $sfield:ident)*
+                    : $type:ty,
             )*
         }
     ) => {
@@ -12,7 +19,7 @@ macro_rules! to_from_hashmap {
         pub struct $name {
             $(
                 $(#[$item])*
-                pub $($field)*$($afield)*$($dfield)*: $type,
+                pub $($field)*$($afield)*$($dfield)*$($sfield)*: $type,
             )*
         }
         impl $name {

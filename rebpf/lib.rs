@@ -1,7 +1,13 @@
 use eyre::bail;
 use hickory_proto::rr::Name;
 use ipnet::IpNet;
+use log::{debug, warn};
 use netlink_socket2::NetlinkSocket;
+use regex_automata::{
+    Anchored, Input,
+    dfa::{Automaton, dense},
+};
+use regex_syntax::escape;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BinaryHeap, HashMap},
@@ -65,10 +71,10 @@ pub struct Route {
 pub struct BpfCtx {
     pub mark: Option<u32>,
     pub matches_time: Instant,
-    pub matches: Arc<String>,
+    pub matches: Arc<Vec<HashMap<&'static str, String>>>,
     pub last_gen: u64,
-    pub cstrings: Vec<u8>,
-    pub cmatches: Vec<bpf::MatchStr>,
+
+    pub arena: Vec<u8>,
 
     pub ptr: usize,
     pub len: u64,
@@ -136,13 +142,24 @@ to_from_enum! {
     enum Kind {
         #[default]
         basename,
-        substring,
-        full,
-        prefix,
+        path,
         ipv4,
-        #[[rename = "ipv4/subnet"]]
-        ipv4_subnet,
         dns,
+    }
+}
+
+to_from_enum! {
+    #[derive(Copy, Clone, Debug, Default, PartialEq)]
+    #[derive(Serialize, Deserialize)]
+    #[allow(non_camel_case_types)]
+    enum Method {
+        #[default]
+        full,
+        substring,
+        prefix,
+        suffix,
+        regex,
+        subnet,
     }
 }
 
@@ -214,6 +231,7 @@ to_from_hashmap! {
     struct Match {
         pattern: String,
         => kind: Kind,
+        => method: Method,
         => direction: Direction,
         user: String,
         => => uid: u32,
@@ -221,22 +239,6 @@ to_from_hashmap! {
 }
 
 impl Match {
-    pub fn try_parse(&self) -> eyre::Result<()> {
-        match self.kind {
-            Kind::basename | Kind::substring | Kind::full | Kind::prefix => {}
-            Kind::ipv4 => {
-                let _ = self.pattern.parse::<Ipv4Addr>()?;
-            }
-            Kind::ipv4_subnet => {
-                let _ = self.pattern.parse::<IpNet>()?;
-            }
-            Kind::dns => {
-                let _ = self.pattern.parse::<Name>()?;
-            }
-        }
-        Ok(())
-    }
-
     pub fn is_dns(&self) -> bool {
         match self.kind {
             Kind::dns => true,
@@ -246,18 +248,9 @@ impl Match {
 
     pub fn is_per_process(&self) -> bool {
         match self.kind {
-            Kind::basename | Kind::substring | Kind::full | Kind::prefix => true,
+            Kind::basename | Kind::path => true,
             _ => false,
         }
-    }
-
-    pub fn applies_to(&self, r: &Match) -> bool {
-        self.kind == r.kind
-            && self.pattern == r.pattern
-            && self.direction == r.direction
-            && (self.uid == 0
-                || self.uid == r.uid
-                || (!self.user.is_empty() && self.user == r.user))
     }
 
     pub fn is_eq_to(&self, r: &Match) -> bool {
@@ -273,28 +266,80 @@ impl Match {
 #[serde(default)]
 pub struct Matches {
     pub matches: Vec<Match>,
-    pub strings_len: usize,
     pub generation: u64,
     pub dns_count: i32,
 }
 
 impl Matches {
-    pub fn add(&mut self, new: Match) -> eyre::Result<()> {
-        new.try_parse()?;
+    pub fn update(&mut self) {
+        self.dns_count = self.matches.iter().filter(|m| m.is_dns()).count() as i32;
+    }
 
         if self.matches.iter().any(|m| m.applies_to(&new)) {
             return Ok(());
+    pub fn method_regex(m: &Match) -> Option<String> {
+        let pat = &m.pattern;
+        if pat.is_empty() {
+            return None;
+        }
+        let method = match m.method {
+            Method::full => format!("{}", escape(pat)),
+            Method::substring => format!("[^/]*{}.*", escape(pat)),
+            Method::prefix => format!("{}.*", escape(pat)),
+            Method::suffix => format!("[^/]*{}", escape(pat)),
+            Method::regex => format!("{}", pat),
+            Method::subnet => return None,
+        };
+        Some(method)
+    }
+
+    pub fn build_path_dfa(&self, arena: &mut Vec<u8>) -> eyre::Result<bpf::DFA> {
+        let mut pat_id_map = Vec::new();
+        let mut set = Vec::new();
+
+        for (i, m) in self.matches.iter().enumerate() {
+            // N.B. Our dfa is configured only for anchored searches
+            let Some(method) = Self::method_regex(m) else {
+                continue;
+            };
+            let pat = match m.kind {
+                Kind::basename => format!(r"^(?:.*/)?{method}$"), // TODO: "." in regex will also match "/"
+                Kind::path => format!(r"^{method}$"),
+                Kind::ipv4 | Kind::dns => continue,
+            };
+            set.push(pat);
+            pat_id_map.push(i);
         }
 
-        let new_len = self.strings_len + new.pattern.len() + 1;
-        if new_len >= bpf::STRINGS_BUF_MAX as usize
-            || self.matches.len() + 1 > bpf::MATCHES_BUF_MAX as usize
-        {
-            bail!("Not enough space for a new match");
+        dfa::encode_dfa(&set, arena, &pat_id_map, self)
+    }
+
+    pub fn try_parse(&mut self, m: &Match) -> eyre::Result<()> {
+        match m.kind {
+            Kind::basename | Kind::path => {
+                self.matches.push(m.clone());
+                let res = self.build_path_dfa(&mut Vec::new());
+                self.matches.pop();
+                res?;
+            }
+            Kind::ipv4 => match m.method {
+                Method::full => {
+                    let _ = m.pattern.parse::<Ipv4Addr>()?;
+                }
+                Method::subnet => {
+                    let _ = m.pattern.parse::<IpNet>()?;
+                }
+                _ => bail!("Invalid method {:?} for kind {:?}", m.method, m.kind),
+            },
+            _ => {},
         }
+        Ok(())
+    }
+
+    pub fn add(&mut self, new: Match) -> eyre::Result<()> {
+        self.try_parse(&new)?;
 
         self.dns_count += new.is_dns() as i32;
-        self.strings_len = new_len;
         self.matches.push(new);
         self.generation += 1;
 
@@ -302,36 +347,29 @@ impl Matches {
     }
 
     pub fn replace(&mut self, from: Match, to: Match) -> eyre::Result<()> {
-        from.try_parse()?;
-        to.try_parse()?;
+        self.try_parse(&from)?;
+        self.try_parse(&to)?;
 
         let Some(pos) = self.matches.iter().position(|m| m.is_eq_to(&from)) else {
             bail!("No such match");
         };
 
-        let new_len = self.strings_len - self.matches[pos].pattern.len() + to.pattern.len();
-        if new_len >= bpf::STRINGS_BUF_MAX as usize {
-            bail!("Not enough space for a new match");
-        }
-
         self.dns_count += to.is_dns() as i32 - from.is_dns() as i32;
         self.matches[pos] = to;
-        self.strings_len = new_len;
         self.generation += 1;
 
         Ok(())
     }
 
     pub fn del(&mut self, new: Match) -> eyre::Result<()> {
-        new.try_parse()?;
+        self.try_parse(&new)?;
 
         let Some(pos) = self.matches.iter().position(|m| m.is_eq_to(&new)) else {
             bail!("No such match");
         };
 
         let old = self.matches.remove(pos);
-        self.dns_count -= new.is_dns() as i32;
-        self.strings_len -= old.pattern.len() + 1;
+        self.dns_count -= old.is_dns() as i32;
         self.generation += 1;
 
         Ok(())

@@ -36,3 +36,4 @@ rand = "0"
 hickory-proto = { version = "0", default-features = false }
 ipnet = { version = "2", default-features = false }
 regex-automata = { version = "0.4.14", default-features = false, features = [ "dfa-build", "perf", "syntax", "unicode" ] }
+regex-syntax = { version = "*", default-features = false }

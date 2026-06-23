@@ -208,6 +208,8 @@ void bpf_run_dns_ringbuf(int (*callback)(void *ctx, void *data, size_t data_sz),
 int bpf_reload_config(BpfConfig *conf) {
   conf->arena_npages = ALIGN_UP(conf->arena_buf_len, PAGE_SIZE) / PAGE_SIZE;
 
+  skel->bss->CONFIG = *conf;
+
   struct bpf_test_run_opts run_opts = {
       .sz = sizeof(run_opts),
       .ctx_in = conf,

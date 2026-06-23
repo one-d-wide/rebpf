@@ -9,11 +9,11 @@ use netlink_bindings::{
     utils::IterableChunks,
 };
 use netlink_socket2::{MulticastSocketRaw, NetlinkSocket, ReplyError};
-use std::{io, marker::PhantomData, net::Ipv4Addr};
+use std::{ffi, io, marker::PhantomData, net::Ipv4Addr};
 use tokio::time::Instant;
 
 use crate::dbus;
-use rebpf::{BpfCtx, Ctx, Direction, Kind, Route, State, Stats, StatsHist, bpf};
+use rebpf::{BpfCtx, Ctx, Direction, Kind, Method, Route, State, Stats, StatsHist, bpf};
 
 pub fn rand_table() -> u32 {
     rand::random_range(u16::MAX as u32..u32::MAX)
@@ -83,14 +83,17 @@ pub async fn watch_reload(ctx: &'static Ctx) -> eyre::Result<()> {
             sock.request(&req)?.recv_ack()?;
 
             for m in &conf.borrow().matches.matches {
-                let (addr, addr_len) = match m.kind {
-                    Kind::ipv4 => {
+                if m.kind != Kind::ipv4 {
+                    continue;
+                }
+                let (addr, addr_len) = match m.method {
+                    Method::full => {
                         let Ok(addr) = m.pattern.parse::<Ipv4Addr>() else {
                             continue;
                         };
                         (addr, 32)
                     }
-                    Kind::ipv4_subnet => {
+                    Method::subnet => {
                         let Ok(addr) = m.pattern.parse::<ipnet::Ipv4Net>() else {
                             continue;
                         };
@@ -448,46 +451,27 @@ fn bpf_reload(bpf_ctx: &mut BpfCtx, conf: &State, enable: bool, mark: u32) {
         if bpf_ctx.last_gen != bpf.generation {
             bpf_ctx.last_gen = bpf.generation;
 
-            bpf_ctx.cstrings.clear();
-            bpf_ctx.cmatches.clear();
-
-            let cstrings = &mut bpf_ctx.cstrings;
-            for m in &conf.matches.matches {
-                use bpf::MatchDir as D;
-                use bpf::MatchKind as K;
-
-                bpf_ctx.cmatches.push(bpf::MatchStr {
-                    kind: match m.kind {
-                        Kind::basename => K::MATCH_KIND_BASENAME,
-                        Kind::substring => K::MATCH_KIND_SUBSTR,
-                        Kind::full => K::MATCH_KIND_FULL,
-                        Kind::prefix => K::MATCH_KIND_PREFIX,
-                        // TODO: The following kinds don't need to be included
-                        Kind::ipv4 => K::__MATCH_KIND_MAX,
-                        Kind::ipv4_subnet => K::__MATCH_KIND_MAX,
-                        Kind::dns => K::__MATCH_KIND_MAX,
-                    },
-                    dir: match m.direction {
-                        Direction::redirect => D::MATCH_DIR_REDIRECT,
-                        Direction::bypass => D::MATCH_DIR_BYPASS,
-                    },
-                    pat: {
-                        let ptr = cstrings.as_ptr().wrapping_add(cstrings.len());
-                        cstrings.extend(m.pattern.as_bytes());
-                        cstrings.push(b'\0');
-                        assert!(cstrings.len() <= bpf::STRINGS_BUF_MAX as usize);
-                        ptr as *mut i8
-                    },
-                    uid: m.uid,
-                });
+            let mut pat_id_map = Vec::new();
+            let mut set = Vec::new();
+            for (i, m) in conf.matches.matches.iter().enumerate() {
+                set.push(m);
+                pat_id_map.push(i);
             }
-            assert_eq!(cstrings.len(), conf.matches.strings_len);
 
-            bpf.matches = bpf_ctx.cmatches.as_mut_ptr();
-            bpf.nmatches = bpf_ctx.cmatches.len() as u32;
-            bpf.strings_len = conf.matches.strings_len as u32;
+            bpf_ctx.arena.clear();
+            match conf.matches.build_path_dfa(&mut bpf_ctx.arena) {
+                Ok(dfa) => {
+                    bpf.has_dfa = true;
+                    bpf.dfa = dfa;
+                }
+                Err(err) => {
+                    warn!("Error compiling DFA for {set:?}: {err}");
+                }
+            }
         }
 
+        bpf.arena_buf = bpf_ctx.arena.as_mut_ptr() as *mut ffi::c_void;
+        bpf.arena_buf_len = bpf_ctx.arena.len() as u32;
         bpf::bpf_reload_config(&mut bpf as *mut bpf::BpfConfig);
     }
 }

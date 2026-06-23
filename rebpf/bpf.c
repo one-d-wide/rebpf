@@ -17,15 +17,22 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 
+#ifndef BPF_TRACE
+#define bpf_printk(...)
+#endif
+
+#include "bpf-dfa.c"
 #include "bpf-shared.h"
-#include "bpf-utils.c"
 
 #define AF_INET 2
 #define AF_INET6 10
 
 char _license[] SEC("license") = "GPL";
 
-static BpfConfig CONFIG;
+BpfConfig CONFIG;
+
+bool HAS_DFA;
+DFA MASTER_DFA;
 
 struct {
   __uint(type, BPF_MAP_TYPE_LRU_HASH);
