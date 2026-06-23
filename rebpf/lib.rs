@@ -111,12 +111,53 @@ impl Ord for DnsRecord {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct DnsDFA {
+    pub redir: dense::DFA<Vec<u32>>,
+    pub redir_map: Vec<usize>,
+    pub bypass: dense::DFA<Vec<u32>>,
+    pub bypass_map: Vec<usize>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct DnsCache {
+    pub dfa: Option<DnsDFA>,
+}
+
+impl DnsCache {
+    pub fn update(&mut self, matches: &Matches) {
+        debug!("Updating dns caches");
+        match matches.build_dns_dfa() {
+            Ok(dfa) => self.dfa = Some(dfa),
+            Err(err) => warn!("Error building DFA for DNS matches: {err}"),
+        }
+    }
+
+    pub fn get(&self, name: &Name) -> Option<(Direction, usize)> {
+        let Some(dfa) = &self.dfa else {
+            return None;
+        };
+
+        let name = name.to_string();
+        let input = Input::new(&name).anchored(Anchored::Yes);
+        if let Ok(Some(r)) = dfa.bypass.try_search_fwd(&input) {
+            return Some((Direction::bypass, dfa.bypass_map[r.pattern().as_usize()]));
+        }
+
+        if let Ok(Some(r)) = dfa.redir.try_search_fwd(&input) {
+            return Some((Direction::redirect, dfa.redir_map[r.pattern().as_usize()]));
+        }
+
+        None
+    }
+}
+
 pub struct DnsState {
     pub sock: NetlinkSocket,
     pub ttl_sleeper: Watch<Option<Instant>>,
     pub heap: BinaryHeap<DnsRecord>,
     pub hash: HashMap<(Name, Ipv4Addr), Instant>,
-    pub cache: HashMap<Name, Direction>,
+    pub cache: DnsCache,
 }
 
 pub struct Ctx {
@@ -275,8 +316,38 @@ impl Matches {
         self.dns_count = self.matches.iter().filter(|m| m.is_dns()).count() as i32;
     }
 
-        if self.matches.iter().any(|m| m.applies_to(&new)) {
-            return Ok(());
+    pub fn build_dns_dfa(&self) -> eyre::Result<DnsDFA> {
+        let mut redir = Vec::new();
+        let mut redir_map = Vec::new();
+        let mut bypass = Vec::new();
+        let mut bypass_map = Vec::new();
+        for (i, m) in self.matches.iter().enumerate() {
+            let Some(method) = Self::method_regex(m) else {
+                continue;
+            };
+            let pat = match m.kind {
+                Kind::dns => format!(r"^{method}\.?$"),
+                _ => continue,
+            };
+            match m.direction {
+                Direction::redirect => {
+                    redir.push(pat);
+                    redir_map.push(i);
+                }
+                Direction::bypass => {
+                    bypass.push(pat);
+                    bypass_map.push(i);
+                }
+            }
+        }
+        Ok(DnsDFA {
+            redir: dfa::build_dfa(&redir, false)?,
+            redir_map,
+            bypass: dfa::build_dfa(&bypass, false)?,
+            bypass_map,
+        })
+    }
+
     pub fn method_regex(m: &Match) -> Option<String> {
         let pat = &m.pattern;
         if pat.is_empty() {
@@ -331,7 +402,12 @@ impl Matches {
                 }
                 _ => bail!("Invalid method {:?} for kind {:?}", m.method, m.kind),
             },
-            _ => {},
+            Kind::dns => {
+                self.matches.push(m.clone());
+                let res = self.build_dns_dfa();
+                self.matches.pop();
+                res?;
+            }
         }
         Ok(())
     }

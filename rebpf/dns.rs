@@ -9,14 +9,14 @@ use std::{net::Ipv4Addr, time::Duration};
 use tokio::time::Instant;
 
 use log::{debug, info};
-use rebpf::{Ctx, Direction, DnsRecord, DnsState, Kind};
+use rebpf::{Ctx, Direction, DnsRecord, DnsState};
 
 pub async fn watch_dns_ttl(ctx: &Ctx) -> eyre::Result<()> {
-    let mut ttl = ctx.dns.lock().await.ttl_sleeper.rx.clone();
+    let mut ttl = ctx.dns.lock().await.ttl_sleeper.clone();
 
     loop {
-        let Some(next) = ttl.borrow().clone() else {
-            ttl.changed().await.unwrap();
+        let Some(next) = ttl.rx.borrow_and_update().clone() else {
+            ttl.rx.changed().await.unwrap();
             continue;
         };
 
@@ -26,7 +26,7 @@ pub async fn watch_dns_ttl(ctx: &Ctx) -> eyre::Result<()> {
         );
 
         tokio::select! {
-            _ = ttl.changed() => continue,
+            _ = ttl.rx.changed() => continue,
             _ = tokio::time::sleep_until(next) => {},
         };
 
@@ -52,6 +52,8 @@ pub async fn watch_dns_ttl(ctx: &Ctx) -> eyre::Result<()> {
 
             remove_record(ctx, &mut dns.sock, &rec)?;
         }
+
+        ttl.tx.send(dns.heap.peek().map(|r| r.ttl_expire)).unwrap();
     }
 }
 
@@ -130,29 +132,20 @@ pub async fn watch_dns_routes(ctx: &Ctx) -> eyre::Result<()> {
         let mut dns = ctx.dns.lock().await;
 
         if update_caches {
-            debug!("Updating dns caches");
-            dns.cache.clear();
-            for m in &conf.borrow().matches.matches {
-                if m.kind == Kind::dns {
-                    if let Ok(mut name) = Name::from_str_relaxed(&m.pattern) {
-                        name.set_fqdn(true);
-                        dns.cache.insert(name, m.direction);
-                    }
-                }
-            }
+            dns.cache.update(&conf.borrow().matches);
         }
 
         let DnsState {
             hash, cache, heap, ..
         } = &mut *dns;
 
-        heap.retain(|h| cache.contains_key(&h.name));
-        hash.retain(|(n, _), _| cache.contains_key(n));
+        heap.retain(|h| cache.get(&h.name).is_some());
+        hash.retain(|(n, _), _| cache.get(n).is_some());
 
         crate::netlink::clear_table(&mut sock, ctx.dns_table)?;
         if conf.borrow().enable {
             for rec in heap.iter() {
-                let dir = *cache.get(&rec.name).unwrap();
+                let (dir, _) = cache.get(&rec.name).unwrap();
                 if let Err(err) = setup_record(ctx, &mut sock, &rec, dir) {
                     debug!("Error setting up dns record: {err}");
                 }
@@ -237,7 +230,8 @@ fn parse(ctx: &Ctx, data: &[u8]) -> eyre::Result<()> {
         };
 
         ans.name.set_fqdn(true);
-        let Some(dir) = dns.cache.get(&ans.name).cloned() else {
+
+        let Some((dir, _)) = dns.cache.get(&ans.name) else {
             debug!("No match");
             debug!("{:?}", dns.cache);
             continue;

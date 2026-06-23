@@ -289,6 +289,10 @@ impl Item {
             res.insert("ttl", format!("{ttl}",));
             res.insert("name", format!("{}", rec.name));
             res.insert("address", format!("{}", rec.dest));
+            if let Some((dir, pat_id)) = dns.cache.get(&rec.name) {
+                res.insert("direction", format!("{dir}"));
+                res.insert("match-id", format!("{pat_id}"));
+            }
             vec.push(res);
         }
         vec
