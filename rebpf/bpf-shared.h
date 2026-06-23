@@ -36,6 +36,10 @@ struct DFA {
   u16 eoi;
   u32 fin_min;
   u32 fin_max;
+  u32 match_slices_off;
+  u32 redirect_table_off;
+  u32 uid_table_off;
+  u32 match_id_table_off;
 };
 
 typedef struct BpfConfig BpfConfig;

@@ -1,12 +1,8 @@
 use hickory_proto::rr::Name;
 use log::debug;
+use netlink_bindings::utils::{parse_i32, parse_u32};
 use std::{
-    collections::HashMap,
-    error::Error,
-    ffi::{CStr, c_char},
-    net::Ipv4Addr,
-    sync::Arc,
-    time::Duration,
+    collections::HashMap, error::Error, ffi::c_char, net::Ipv4Addr, sync::Arc, time::Duration,
 };
 use tokio::time::Instant;
 use zbus::{Connection, interface, message::Header};
@@ -201,7 +197,7 @@ impl Item {
             .await
     }
 
-    async fn get_proc_names(&self) -> Arc<String> {
+    async fn get_proc_names(&self) -> Arc<Vec<HashMap<&str, String>>> {
         let mut lock = self.ctx.bpf.lock().await;
         if lock.matches_time.elapsed() > Duration::from_secs(1) {
             lock.matches_time = Instant::now();
@@ -213,12 +209,42 @@ impl Item {
                 );
 
                 assert_ne!(lock.ptr, 0);
-                assert_ne!(lock.len, 0);
-                lock.matches = Arc::new(
-                    CStr::from_ptr(lock.ptr as *const i8)
-                        .to_string_lossy()
-                        .to_string(),
+
+                let mut c = std::slice::from_raw_parts(
+                    lock.ptr as *mut usize as *const u8,
+                    lock.len as usize,
                 );
+
+                let mut h = Vec::new();
+
+                while !c.is_empty() {
+                    let pat_id = parse_i32(&c[0..4]).unwrap();
+                    let len = parse_u32(&c[4..8]).unwrap() as usize;
+
+                    if pat_id < 0 {
+                        continue;
+                    }
+
+                    while pat_id as usize >= h.len() {
+                        h.push(Vec::new());
+                    }
+
+                    let name = String::from_utf8_lossy(&c[8..8 + len]);
+                    h[pat_id as usize].push(name.to_string());
+                    c = &c[8 + len..];
+                }
+
+                let mut vec = Vec::new();
+                for (pat_id, procs) in h.into_iter().enumerate() {
+                    for proc in procs {
+                        let mut res = HashMap::new();
+                        res.insert("match-id", format!("{pat_id}"));
+                        res.insert("basename", proc);
+                        vec.push(res);
+                    }
+                }
+
+                lock.matches = Arc::new(vec);
             }
         }
 

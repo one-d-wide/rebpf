@@ -265,7 +265,7 @@ void bpf_get_proc_names(char **ptr, u64 *len, u64 *cap) {
   int iter_fd _cleanup(closep) = -1;
   EXPECT((iter_fd = bpf_iter_create(links.dump_socket_procs_fd)) >= 0);
 
-  *len = 1;
+  *len = 0;
   ssize_t res = 0;
   do {
     *len += res;
@@ -273,8 +273,7 @@ void bpf_get_proc_names(char **ptr, u64 *len, u64 *cap) {
       *cap = *cap ? (*cap) * 2 : 2048;
       *ptr = realloc(*ptr, *cap);
     }
-  } while ((res = read(iter_fd, *ptr + *len - 1, *cap - *len)) > 0);
-  (*ptr)[*len - 1] = '\0';
+  } while ((res = read(iter_fd, *ptr + *len, *cap - *len)) > 0);
   EXPECT(res >= 0);
 }
 

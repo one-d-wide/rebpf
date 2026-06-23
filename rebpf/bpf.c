@@ -34,11 +34,25 @@ BpfConfig CONFIG;
 bool HAS_DFA;
 DFA MASTER_DFA;
 
+typedef struct MatchRes MatchRes;
+struct MatchRes {
+  u32 redirect; // 0 => bypass, 1 => redirect
+  u32 table_off;
+  u32 table_len;
+};
+
+typedef struct MatchCtx MatchCtx;
+struct MatchCtx {
+  u32 uid;
+  DFA dfa;
+  MatchRes res;
+};
+
 struct {
   __uint(type, BPF_MAP_TYPE_LRU_HASH);
   __uint(max_entries, TASK_CACHE_MAX);
   __uint(key_size, sizeof(TaskId));
-  __uint(value_size, sizeof(bool));
+  __uint(value_size, sizeof(MatchRes));
 } task_cache SEC(".maps");
 
 struct {
@@ -46,19 +60,17 @@ struct {
   __uint(max_entries, 65536 * 2);
 } dns_ringbuf SEC(".maps");
 
-static bool needs_mark(struct task_struct *task, u32 uid);
-static bool needs_mark_shallow(struct task_struct *task, u32 uid);
-static bool needs_mark_descend(struct task_struct *task, u32 uid);
-static bool needs_mark_uncached(struct task_struct *task, u32 uid);
+static int needs_mark(struct task_struct *task, MatchCtx *m);
+static int needs_mark_uncached(struct task_struct *task, MatchCtx *m);
 
 SEC("cgroup/sock_create")
 int cgroup_socket_create(struct bpf_sock *ctx) {
-  int family = ctx->family;
-  if (family != AF_INET && family != AF_INET6) {
+  if (!CONFIG.enable) {
     return 1;
   }
 
-  if (!CONFIG.enable) {
+  int family = ctx->family;
+  if (family != AF_INET && family != AF_INET6) {
     return 1;
   }
 
@@ -66,7 +78,17 @@ int cgroup_socket_create(struct bpf_sock *ctx) {
   u32 uid = bpf_get_current_uid_gid();
   bpf_printk("cgroup/sock_create %s", task->comm);
 
-  if (!needs_mark(task, uid)) {
+  if (!HAS_DFA) {
+    bpf_printk("DFA not setup");
+    return 1;
+  }
+
+  MatchCtx m = {
+      .uid = uid,
+      .dfa = MASTER_DFA,
+  };
+
+  if (needs_mark(task, &m) <= 0) {
     return 1;
   }
 
@@ -78,7 +100,7 @@ int cgroup_socket_create(struct bpf_sock *ctx) {
   return 1;
 }
 
-static int dump_iter_file(struct bpf_iter__task_file *ctx, bool only_report) {
+static int dump_iter_file(struct bpf_iter__task_file *ctx, bool procfd) {
   struct task_struct *task = ctx->task;
   struct file *file = ctx->file;
 
@@ -101,40 +123,69 @@ static int dump_iter_file(struct bpf_iter__task_file *ctx, bool only_report) {
     return 0;
   }
 
-  u32 uid = task->cred->uid.val;
-
-  if (!needs_mark(task, uid)) {
+  if (!HAS_DFA) {
+    bpf_printk("DFA not setup");
     return 0;
   }
 
-  if (only_report) {
-    const struct file *file = task->mm->exe_file;
-    if (!file) {
+  MatchCtx m = {
+      .uid = task->cred->uid.val,
+      .dfa = MASTER_DFA,
+  };
+
+  if (needs_mark(task, &m) < 0) {
+    return 0;
+  }
+
+  if (procfd) {
+    if (!m.res.redirect) {
       return 0;
     }
-
-    BPF_SEQ_PRINTF(ctx->meta->seq, "%s\n", file->f_path.dentry->d_name.name);
+    struct ProcFdEntry ent = {
+        .pid = task->pid,
+        .start_boottime = task->start_boottime,
+        .fd = ctx->fd,
+    };
+    bpf_seq_write(ctx->meta->seq, &ent, sizeof(ent));
     return 0;
   }
 
-  struct ProcFdEntry ent = {
-      .pid = task->pid,
-      .start_boottime = task->start_boottime,
-      .fd = ctx->fd,
-  };
-  bpf_seq_write(ctx->meta->seq, &ent, sizeof(ent));
+  const struct file *exe_file = task->mm->exe_file;
+  if (!file) {
+    return 0;
+  }
+
+  struct seq_file *seq = ctx->meta->seq;
+  const u8 *name = exe_file->f_path.dentry->d_name.name;
+  u32 len = exe_file->f_path.dentry->d_name.len;
+
+  u32 __arena *match_id_table =
+      (u32 __arena *)(get_arena() + m.dfa.match_id_table_off);
+
+  bpf_printk("State %u, table_off=%u, table_len=%u", m.dfa.start,
+             m.res.table_off, m.res.table_len);
+
+  int i;
+  bpf_for(i, 0, m.res.table_len) {
+    u32 pat_id = match_id_table[m.res.table_off + i];
+    bpf_printk("State %u, pat_id=%u", m.dfa.start, pat_id);
+
+    bpf_seq_write(seq, &pat_id, sizeof(pat_id));
+    bpf_seq_write(seq, &len, sizeof(len));
+    BPF_SEQ_PRINTF(seq, "%s", name);
+  }
 
   return 0;
 }
 
 SEC("iter/task_file")
 int refresh_sockets(struct bpf_iter__task_file *ctx) {
-  return dump_iter_file(ctx, false);
+  return dump_iter_file(ctx, true);
 }
 
 SEC("iter/task_file")
 int dump_socket_procs(struct bpf_iter__task_file *ctx) {
-  return dump_iter_file(ctx, true);
+  return dump_iter_file(ctx, false);
 }
 
 static long delete_callback(struct bpf_map *map, const void *key, void *value,
@@ -145,203 +196,91 @@ static long delete_callback(struct bpf_map *map, const void *key, void *value,
 
 SEC("syscall")
 int reload_config(struct BpfConfig *conf) {
-  u32 last_gen = CONFIG.generation;
-  CONFIG = *conf;
-
-  if (conf->generation == last_gen) {
-    goto skip_cloning_matches;
+  if (!BASE || BASE_PAGES < conf->arena_npages) {
+    if (BASE) {
+      bpf_arena_free_pages(&arena, BASE, BASE_PAGES);
+    }
+    BASE_PAGES = conf->arena_npages;
+    BASE = bpf_arena_alloc_pages(&arena, NULL, BASE_PAGES, NUMA_NO_NODE, 0);
   }
-
-  ONLY_BASENAME_MATCHES = true;
-  NMATCHES = 0;
-
-  int nmatches = conf->nmatches;
-  if (nmatches > MATCHES_BUF_MAX) {
-    goto err;
-  }
-
-  struct bpf_dynptr strings;
-  bpf_dynptr_from_mem(STRINGS_BUF, STRINGS_BUF_MAX, 0, &strings);
-
-  u32 off = 0;
-  u32 i;
-  bpf_for(i, 0, nmatches) {
-    // Make verifier happy
-    if (i >= MATCHES_BUF_MAX) {
-      goto err;
-    }
-    if (off >= STRINGS_BUF_MAX) {
-      goto err;
-    }
-
-    MatchStr match = {0};
-    if (bpf_probe_read_user(&match, sizeof(match), conf->matches + i)) {
-      goto err;
-    }
-
-    int len = bpf_probe_read_user_str_dynptr(&strings, off,
-                                             STRINGS_BUF_MAX - off, match.pat);
-    if (len <= 0) {
-      goto err;
-    }
-    if (off + len == STRINGS_BUF_MAX) {
-      goto err;
-    }
-
-    MATCHES_BUF[i] = (Match){
-        .kind = match.kind,
-        .dir = match.dir,
-        .uid = match.uid,
-        .pat_off = off,
-        .pat_len = len - 1,
-    };
-    off += len;
-
-    if (match.kind != MATCH_KIND_BASENAME && match.kind < __MATCH_KIND_MAX) {
-      ONLY_BASENAME_MATCHES = false;
-    }
-  }
-  NMATCHES = nmatches;
 
   bpf_for_each_map_elem(&task_cache, delete_callback, NULL, 0);
-
-skip_cloning_matches:
   return 0;
-
-err:
-  CONFIG.generation = last_gen;
-  return 1;
 }
 
-inline static bool needs_mark(struct task_struct *task, u32 uid) {
-  //   if (CONFIG.check_parents) {
-  //     return needs_mark_descend(task, uid);
-  //   } else {
-  //     return needs_mark_shallow(task, uid);
-  //   }
-
-  return needs_mark_shallow(task, uid);
-}
-
-static bool needs_mark_shallow(struct task_struct *task, u32 uid) {
+static int needs_mark(struct task_struct *task, MatchCtx *m) {
   TaskId taskid = {
       .pid = task->pid,
       .time = task->start_boottime,
   };
 
-  u8 *cached_res = bpf_map_lookup_elem(&task_cache, &taskid);
+  MatchRes *cached_res = bpf_map_lookup_elem(&task_cache, &taskid);
   if (cached_res) {
-    return *cached_res;
+    m->res = *cached_res;
+    return m->res.redirect;
   }
 
-  u8 res = needs_mark_uncached(task, uid);
+  if (needs_mark_uncached(task, m) < 0) {
+    return -1;
+  }
 
-  bpf_map_update_elem(&task_cache, &taskid, &res, BPF_ANY);
-
-  return res;
+  bpf_map_update_elem(&task_cache, &taskid, &m->res, BPF_ANY);
+  return m->res.redirect;
 }
 
-static bool needs_mark_uncached(struct task_struct *task, u32 uid) {
+static int needs_mark_uncached(struct task_struct *task, MatchCtx *m) {
+  trace_time("needs_mark_uncached");
+
   struct file *file = task->mm->exe_file;
 
   if (!file) {
     bpf_printk("task doesn't have a file %s", task->comm);
-    return false;
+    return -1;
   }
 
-  const char *path;
-  if (ONLY_BASENAME_MATCHES) {
-    path = (char *)file->f_path.dentry->d_name.name;
-  } else {
-    path = read_path_buf(file);
+  DFA *dfa = &m->dfa;
+  if (!match_regex_rev_path(file, dfa)) {
+    return -1;
   }
 
-  if (!path) {
-    bpf_printk("err path d path", task->comm);
-    return false;
+  u32 this = dfa->start;
+  if (this < dfa->fin_min || dfa->fin_max < this) {
+    return -1;
   }
 
-  MatchCtx ctx;
-  match_ctx_init(&ctx, uid, path);
+  u8 __arena *arena = get_arena();
+  u32 __arena *slices = (u32 __arena *)(arena + dfa->match_slices_off);
+  u8 __arena *redirect_table = (u8 __arena *)(arena + dfa->redirect_table_off);
+  u32 __arena *uid_table = (u32 __arena *)(arena + dfa->uid_table_off);
 
-  bool res = false;
-  u32 i = 0;
-  bpf_for(i, 0, MIN(NMATCHES, ARRAY_LEN(MATCHES_BUF))) {
-    if ((res = match_ctx_match(&ctx, &MATCHES_BUF[i]) != 0)) {
-      break;
-    }
-  }
+  u32 off = this - dfa->fin_min;
 
-  if (res) {
-    return MATCHES_BUF[i].dir == MATCH_DIR_REDIRECT;
-  }
+  bpf_printk("slices %u", dfa->match_slices_off);
+  bpf_printk("State %u, off=%u", this, off);
 
-  return false;
-}
+  u32 table_off = slices[off * 2];
+  u32 table_len = slices[off * 2 + 1];
 
-// WIP. Scan current process and its parent processes for a match.
-[[maybe_unused]]
-static bool needs_mark_descend(struct task_struct *task, u32 uid) {
-  TaskId taskid = {
-      .pid = task->pid,
-      .time = task->start_boottime,
+  m->res = (MatchRes){
+      .redirect = redirect_table[off],
+      .table_off = table_off,
+      .table_len = table_len,
   };
 
-  u8 *cached_res = bpf_map_lookup_elem(&task_cache, &taskid);
-  if (cached_res) {
-    return *cached_res;
+  bpf_printk("State %u, table_off=%u, table_len=%u", this, table_off,
+             table_len);
+
+  int i;
+  bpf_for(i, 0, table_len) {
+    int uid = uid_table[table_off + i];
+
+    bpf_printk("State %u, uid=%u", this, uid);
+    if (uid == 0 || uid == m->uid) {
+      return m->res.redirect;
+    }
   }
 
-  u8 res = false;
-  int i = 0;
-  bpf_for(i, 0, DESCEND_MAX) {
-    bpf_printk("TASK %d %d %s", i, task->pid, task->comm);
-
-    // Check if task at hand is marked
-    res = needs_mark_uncached(task, uid);
-    if (res) {
-      break;
-    }
-
-    // Check if we already sweeped its parent task
-    struct task_struct *par = task->real_parent;
-    if (task->pid == 1 || !par || task == par) {
-      res = false;
-      break;
-    }
-
-    TaskId par_id = {
-        .pid = par->pid,
-        .time = par->start_boottime,
-    };
-
-    u8 *cached_res = bpf_map_lookup_elem(&task_cache, &par_id);
-    if (cached_res) {
-      bpf_printk("PARENT CACHED %d %d %s", i, par->pid, par->comm);
-      res = *cached_res;
-      break;
-    }
-
-    // Move the parent task
-    // BPF doesn't seem to really allow using arrays of pointers/recursion
-    // without upsetting the verifier, so we will just update one at a time.
-    // This will increase number of uncached checksfrom O(n) to O(height*n)
-    // (worst case) In practice though, not many processes use IP network, so n
-    // should be small.
-    task = par;
-  }
-
-  taskid = (TaskId){
-      .pid = task->pid,
-      .time = task->start_boottime,
-  };
-
-  // We can't build a proper stack, so we will just buld
-  if (bpf_map_update_elem(&task_cache, &taskid, &res, BPF_ANY)) {
-    bpf_printk("err updating task cache");
-  }
-
-  return res;
+  return -1;
 }
 
 SEC("cgroup_skb/ingress")
@@ -364,6 +303,8 @@ int ingress(struct __sk_buff *skb) {
 
   bpf_printk("cgroup_skb/ingress mark=%ld sport=%ld", skb->mark,
              bpf_ntohl(skb->remote_port));
+
+  trace_time_fn();
 
   void *data_end = (void *)(long)skb->data_end;
   void *data = (void *)(long)skb->data;
