@@ -16,7 +16,8 @@ use tokio::{
 };
 use zbus::Connection;
 
-mod macros;
+pub mod dfa;
+pub mod macros;
 
 #[allow(unused)]
 #[allow(non_camel_case_types)]
