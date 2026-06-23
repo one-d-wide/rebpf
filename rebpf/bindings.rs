@@ -102,12 +102,31 @@ pub const SIG_ATOMIC_MAX: u32 = 2147483647;
 pub const SIZE_MAX: i32 = -1;
 pub const WINT_MIN: u32 = 0;
 pub const WINT_MAX: u32 = 4294967295;
+pub const PAGE_SIZE: u32 = 4096;
+pub const DFA_MAX_SIZE: u32 = 1048576;
+pub const ARENA_SIZE: u32 = 2097152;
 pub const DESCEND_MAX: u32 = 1024;
-pub const MATCHES_BUF_MAX: u32 = 128;
-pub const STRINGS_BUF_MAX: u32 = 4096;
 pub const DNS_PORT: u32 = 53;
 pub const PATH_MAX: u32 = 4096;
 pub const TASK_CACHE_MAX: u32 = 1024;
+pub type wchar_t = ::std::os::raw::c_int;
+#[repr(C)]
+#[repr(align(16))]
+#[derive(Debug, Copy, Clone)]
+pub struct max_align_t {
+    pub __clang_max_align_nonce1: ::std::os::raw::c_longlong,
+    pub __bindgen_padding_0: u64,
+    pub __clang_max_align_nonce2: u128,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of max_align_t"][::std::mem::size_of::<max_align_t>() - 32usize];
+    ["Alignment of max_align_t"][::std::mem::align_of::<max_align_t>() - 16usize];
+    ["Offset of field: max_align_t::__clang_max_align_nonce1"]
+        [::std::mem::offset_of!(max_align_t, __clang_max_align_nonce1) - 0usize];
+    ["Offset of field: max_align_t::__clang_max_align_nonce2"]
+        [::std::mem::offset_of!(max_align_t, __clang_max_align_nonce2) - 16usize];
+};
 pub type __u_char = ::std::os::raw::c_uchar;
 pub type __u_short = ::std::os::raw::c_ushort;
 pub type __u_int = ::std::os::raw::c_uint;
@@ -199,115 +218,71 @@ pub type uint_fast32_t = ::std::os::raw::c_ulong;
 pub type uint_fast64_t = ::std::os::raw::c_ulong;
 pub type intmax_t = __intmax_t;
 pub type uintmax_t = __uintmax_t;
-pub type wchar_t = ::std::os::raw::c_int;
-#[repr(C)]
-#[repr(align(16))]
-#[derive(Debug, Copy, Clone)]
-pub struct max_align_t {
-    pub __clang_max_align_nonce1: ::std::os::raw::c_longlong,
-    pub __bindgen_padding_0: u64,
-    pub __clang_max_align_nonce2: u128,
-}
-#[allow(clippy::unnecessary_operation, clippy::identity_op)]
-const _: () = {
-    ["Size of max_align_t"][::std::mem::size_of::<max_align_t>() - 32usize];
-    ["Alignment of max_align_t"][::std::mem::align_of::<max_align_t>() - 16usize];
-    ["Offset of field: max_align_t::__clang_max_align_nonce1"]
-        [::std::mem::offset_of!(max_align_t, __clang_max_align_nonce1) - 0usize];
-    ["Offset of field: max_align_t::__clang_max_align_nonce2"]
-        [::std::mem::offset_of!(max_align_t, __clang_max_align_nonce2) - 16usize];
-};
 pub type u64_ = u64;
 pub type u32_ = u32;
 pub type u16_ = u16;
 pub type u8_ = u8;
-#[repr(u8)]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
-pub enum MatchKind {
-    MATCH_KIND_INVAL = 0,
-    MATCH_KIND_BASENAME = 1,
-    MATCH_KIND_FULL = 2,
-    MATCH_KIND_SUBSTR = 3,
-    MATCH_KIND_PREFIX = 4,
-    __MATCH_KIND_MAX = 5,
-}
-unsafe extern "C" {
-    pub static mut MATCH_KIND_STRINGS: [*const ::std::os::raw::c_char; 6usize];
-}
-#[repr(u8)]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
-pub enum MatchDir {
-    MATCH_DIR_INVAL = 0,
-    MATCH_DIR_REDIRECT = 1,
-    MATCH_DIR_BYPASS = 2,
-}
-unsafe extern "C" {
-    pub static mut MATCH_DIR_STRINGS: [*const ::std::os::raw::c_char; 4usize];
-}
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
-pub struct MatchStr {
-    pub kind: MatchKind,
-    pub dir: MatchDir,
-    pub uid: u32_,
-    pub pat: *mut ::std::os::raw::c_char,
+pub struct DFA {
+    pub dfa_off: u32_,
+    pub start: u32_,
+    pub eoi: u16_,
+    pub fin_min: u32_,
+    pub fin_max: u32_,
+    pub match_slices_off: u32_,
+    pub redirect_table_off: u32_,
+    pub uid_table_off: u32_,
+    pub match_id_table_off: u32_,
 }
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
-    ["Size of MatchStr"][::std::mem::size_of::<MatchStr>() - 16usize];
-    ["Alignment of MatchStr"][::std::mem::align_of::<MatchStr>() - 8usize];
-    ["Offset of field: MatchStr::kind"][::std::mem::offset_of!(MatchStr, kind) - 0usize];
-    ["Offset of field: MatchStr::dir"][::std::mem::offset_of!(MatchStr, dir) - 1usize];
-    ["Offset of field: MatchStr::uid"][::std::mem::offset_of!(MatchStr, uid) - 4usize];
-    ["Offset of field: MatchStr::pat"][::std::mem::offset_of!(MatchStr, pat) - 8usize];
-};
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct Match {
-    pub kind: u8_,
-    pub dir: u8_,
-    pub uid: u32_,
-    pub pat_off: u32_,
-    pub pat_len: u32_,
-}
-#[allow(clippy::unnecessary_operation, clippy::identity_op)]
-const _: () = {
-    ["Size of Match"][::std::mem::size_of::<Match>() - 16usize];
-    ["Alignment of Match"][::std::mem::align_of::<Match>() - 4usize];
-    ["Offset of field: Match::kind"][::std::mem::offset_of!(Match, kind) - 0usize];
-    ["Offset of field: Match::dir"][::std::mem::offset_of!(Match, dir) - 1usize];
-    ["Offset of field: Match::uid"][::std::mem::offset_of!(Match, uid) - 4usize];
-    ["Offset of field: Match::pat_off"][::std::mem::offset_of!(Match, pat_off) - 8usize];
-    ["Offset of field: Match::pat_len"][::std::mem::offset_of!(Match, pat_len) - 12usize];
+    ["Size of DFA"][::std::mem::size_of::<DFA>() - 36usize];
+    ["Alignment of DFA"][::std::mem::align_of::<DFA>() - 4usize];
+    ["Offset of field: DFA::dfa_off"][::std::mem::offset_of!(DFA, dfa_off) - 0usize];
+    ["Offset of field: DFA::start"][::std::mem::offset_of!(DFA, start) - 4usize];
+    ["Offset of field: DFA::eoi"][::std::mem::offset_of!(DFA, eoi) - 8usize];
+    ["Offset of field: DFA::fin_min"][::std::mem::offset_of!(DFA, fin_min) - 12usize];
+    ["Offset of field: DFA::fin_max"][::std::mem::offset_of!(DFA, fin_max) - 16usize];
+    ["Offset of field: DFA::match_slices_off"]
+        [::std::mem::offset_of!(DFA, match_slices_off) - 20usize];
+    ["Offset of field: DFA::redirect_table_off"]
+        [::std::mem::offset_of!(DFA, redirect_table_off) - 24usize];
+    ["Offset of field: DFA::uid_table_off"][::std::mem::offset_of!(DFA, uid_table_off) - 28usize];
+    ["Offset of field: DFA::match_id_table_off"]
+        [::std::mem::offset_of!(DFA, match_id_table_off) - 32usize];
 };
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct BpfConfig {
     pub enable: bool,
     pub enable_dns: bool,
-    pub check_parents: bool,
     pub mark: u32_,
-    pub nmatches: u32_,
-    pub strings_len: u32_,
-    pub matches: *mut MatchStr,
+    pub arena_buf: *mut ::std::os::raw::c_void,
+    pub arena_buf_len: u32_,
+    pub arena_npages: u32_,
+    pub has_dfa: bool,
+    pub dfa: DFA,
     pub generation: u64_,
 }
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
-    ["Size of BpfConfig"][::std::mem::size_of::<BpfConfig>() - 32usize];
+    ["Size of BpfConfig"][::std::mem::size_of::<BpfConfig>() - 72usize];
     ["Alignment of BpfConfig"][::std::mem::align_of::<BpfConfig>() - 8usize];
     ["Offset of field: BpfConfig::enable"][::std::mem::offset_of!(BpfConfig, enable) - 0usize];
     ["Offset of field: BpfConfig::enable_dns"]
         [::std::mem::offset_of!(BpfConfig, enable_dns) - 1usize];
-    ["Offset of field: BpfConfig::check_parents"]
-        [::std::mem::offset_of!(BpfConfig, check_parents) - 2usize];
     ["Offset of field: BpfConfig::mark"][::std::mem::offset_of!(BpfConfig, mark) - 4usize];
-    ["Offset of field: BpfConfig::nmatches"][::std::mem::offset_of!(BpfConfig, nmatches) - 8usize];
-    ["Offset of field: BpfConfig::strings_len"]
-        [::std::mem::offset_of!(BpfConfig, strings_len) - 12usize];
-    ["Offset of field: BpfConfig::matches"][::std::mem::offset_of!(BpfConfig, matches) - 16usize];
+    ["Offset of field: BpfConfig::arena_buf"]
+        [::std::mem::offset_of!(BpfConfig, arena_buf) - 8usize];
+    ["Offset of field: BpfConfig::arena_buf_len"]
+        [::std::mem::offset_of!(BpfConfig, arena_buf_len) - 16usize];
+    ["Offset of field: BpfConfig::arena_npages"]
+        [::std::mem::offset_of!(BpfConfig, arena_npages) - 20usize];
+    ["Offset of field: BpfConfig::has_dfa"][::std::mem::offset_of!(BpfConfig, has_dfa) - 24usize];
+    ["Offset of field: BpfConfig::dfa"][::std::mem::offset_of!(BpfConfig, dfa) - 28usize];
     ["Offset of field: BpfConfig::generation"]
-        [::std::mem::offset_of!(BpfConfig, generation) - 24usize];
+        [::std::mem::offset_of!(BpfConfig, generation) - 64usize];
 };
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
