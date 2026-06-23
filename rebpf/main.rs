@@ -12,7 +12,7 @@ use std::{
 use tokio::{
     signal::unix::SignalKind,
     sync::{Mutex, watch},
-    task::JoinHandle,
+    task::JoinSet,
     time::Instant,
 };
 
@@ -21,6 +21,8 @@ mod dns;
 mod netlink;
 
 use rebpf::{BpfCtx, Ctx, DnsState, Matches, State, Watch, bpf};
+
+type Tasks = tokio::task::JoinSet<eyre::Result<()>>;
 
 #[derive(FromArgs)]
 /// Per-process network traffic redirection using eBPF.
@@ -66,6 +68,9 @@ async fn run(args: CliArgs) -> eyre::Result<()> {
     check_kernel_version().ok();
 
     unsafe {
+        if libc::getuid() != 0 {
+            warn!("Rebpf requires root to load the eBPF program and do pidfd_getfd()");
+        }
         bpf::bpf_init();
     }
 
@@ -79,12 +84,13 @@ async fn run(args: CliArgs) -> eyre::Result<()> {
         generation: 0,
     });
 
-    let save_state_handle = load_state(&args, &state)?;
+    let mut tasks = JoinSet::new();
+    load_state(&mut tasks, &args, &state)?;
 
     if args.enable && args.disable {
         bail!("Can't simultaneously set --enable and --disable");
     }
-    if (args.enable || args.disable) && state.rx.borrow().enable != args.enable {
+    if (args.enable || args.disable) && state.tx.borrow().enable != args.enable {
         state.tx.send_modify(|s| s.enable = args.enable);
     }
 
@@ -111,8 +117,7 @@ async fn run(args: CliArgs) -> eyre::Result<()> {
             mark: None,
             matches_time: Instant::now(),
             matches: Default::default(),
-            cstrings: Vec::with_capacity(bpf::STRINGS_BUF_MAX as usize),
-            cmatches: Vec::with_capacity(bpf::MATCHES_BUF_MAX as usize),
+            arena: Vec::new(),
             last_gen: 0,
             ptr: 0,
             len: 0,
@@ -127,15 +132,15 @@ async fn run(args: CliArgs) -> eyre::Result<()> {
     ctx.to_changed.tx.send(()).unwrap();
     ctx.from_changed.tx.send(()).unwrap();
 
-    let mut signals = tokio::task::JoinSet::new();
     for kind in [
         SignalKind::interrupt(),
         SignalKind::terminate(),
         SignalKind::quit(),
     ] {
         if let Ok(mut signal) = tokio::signal::unix::signal(kind) {
-            signals.spawn(async move {
+            tasks.spawn(async move {
                 signal.recv().await;
+                Ok(())
             });
         }
     }
@@ -143,18 +148,22 @@ async fn run(args: CliArgs) -> eyre::Result<()> {
     let mut sock = NetlinkSocket::new();
     netlink::setup_static_rules(ctx, &mut sock)?;
 
-    let res = tokio::select! {
-        res = save_state_handle => res,
-        _ = signals.join_next() => Ok(Ok(())),
-        res = tokio::spawn(netlink::watch_reload(ctx)) => res,
-        res = tokio::spawn(netlink::watch_routes(ctx)) => res,
-        res = tokio::spawn(dns::watch_dns_routes(ctx)) => res,
-        res = tokio::spawn(dns::watch_dns_ttl(ctx)) => res,
-        res = tokio::task::spawn_blocking(|| netlink::watch_multicast(ctx)) => res,
-        _ = tokio::task::spawn_blocking(move || unsafe {
+    tasks.spawn(netlink::watch_reload(ctx));
+    tasks.spawn(netlink::watch_routes(ctx));
+    tasks.spawn(dns::watch_dns_routes(ctx));
+    tasks.spawn(dns::watch_dns_ttl(ctx));
+    tasks
+        .spawn(async move { tokio::task::spawn_blocking(|| netlink::watch_multicast(ctx)).await? });
+    tasks.spawn(async move {
+        tokio::task::spawn_blocking(move || unsafe {
             bpf::bpf_run_dns_ringbuf(Some(dns::callback), std::mem::transmute(ctx));
-        }) => Ok(Ok(())),
-    };
+        })
+        .await?;
+        bail!("DNS ringbuf listener exited unexpectedly");
+    });
+
+    let res = tasks.join_next().await.unwrap();
+    tasks.shutdown().await;
 
     if let Some(mark) = ctx.bpf.lock().await.mark {
         netlink::clear_rules(&mut sock, mark).ok();
@@ -165,7 +174,7 @@ async fn run(args: CliArgs) -> eyre::Result<()> {
     res?
 }
 
-fn load_state(args: &CliArgs, state: &Watch<State>) -> eyre::Result<JoinHandle<eyre::Result<()>>> {
+fn load_state(tasks: &mut Tasks, args: &CliArgs, state: &Watch<State>) -> eyre::Result<()> {
     let state_dir = args
         .state_dir
         .as_deref()
@@ -194,7 +203,7 @@ fn load_state(args: &CliArgs, state: &Watch<State>) -> eyre::Result<JoinHandle<e
     }
 
     if files.is_empty() {
-        return Ok(tokio::spawn(std::future::pending()));
+        return Ok(());
     }
 
     let mut last_i = 0;
@@ -205,7 +214,7 @@ fn load_state(args: &CliArgs, state: &Watch<State>) -> eyre::Result<JoinHandle<e
         info!("Reading state file {p:?}");
         c.read_to_string(&mut buf)?;
 
-        let next: State = match serde_json::from_str(&buf) {
+        let mut next: State = match serde_json::from_str(&buf) {
             Ok(next) => next,
             Err(err) => {
                 warn!("Error parsing state file: {err}");
@@ -216,13 +225,16 @@ fn load_state(args: &CliArgs, state: &Watch<State>) -> eyre::Result<JoinHandle<e
         if last_gen <= next.generation {
             last_gen = next.generation;
             last_i = i;
+            next.matches.update();
             state.tx.send(next).unwrap();
         }
     }
 
     let mut rx = state.rx.clone();
     rx.mark_unchanged();
-    Ok(tokio::spawn(save_state(rx, files, last_i)))
+
+    tasks.spawn(save_state(rx, files, last_i));
+    Ok(())
 }
 
 async fn save_state(
