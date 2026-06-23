@@ -1,5 +1,5 @@
 use iced::futures::channel::mpsc::{UnboundedReceiver, UnboundedSender};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 
 mod macros;
 
@@ -33,11 +33,13 @@ pub enum M {
     MatchFromProc(u64, usize),
     MatchUpdate(u64, usize, String),
     MatchKind(u64, usize, &'static str),
+    MatchMethod(u64, usize, &'static str),
     MatchDir,
     MatchUpdateDir(u64, usize),
     MatchSubmit(u64, usize),
     Procs(String),
     Kind(&'static str),
+    Method(&'static str),
     Attached(Attached),
     Matches(Vec<Match>),
     Stats(Stats),
@@ -45,7 +47,7 @@ pub enum M {
     DbusFail(zbus::Error),
     DbusCantConnect(zbus::Error),
     DbusConnected,
-    ActiveProcs(HashSet<String>),
+    ActiveProcs(HashMap<usize, BTreeSet<String>>),
     MatchFocus,
     MatchUnfocus,
     ProcPopupFocus,
@@ -115,6 +117,7 @@ to_from_hashmap_all! {
 }
 
 to_from_hashmap! {
+    #[derive(Clone, Debug, Default)]
     struct Attached {
         enabled: bool,
         attached: bool,
@@ -127,6 +130,7 @@ to_from_hashmap! {
 }
 
 to_from_hashmap! {
+    #[derive(Clone, Debug, Default)]
     struct Stats {
         tx_bytes: u64,
         rx_bytes: u64,
@@ -135,9 +139,11 @@ to_from_hashmap! {
 }
 
 to_from_hashmap! {
+    #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
     struct Match {
         pattern: String,
         kind: String,
+        method: String,
         direction: String,
         user: String,
         uid: String,
@@ -145,20 +151,25 @@ to_from_hashmap! {
 }
 
 impl Match {
-    pub fn is_in(&self, h: &HashSet<String>) -> bool {
-        if self.kind == "basename" {
-            return h.contains(&self.pattern);
-        }
-        h.iter().any(|s| self.matches(s))
-    }
-
-    pub fn matches(&self, s: &str) -> bool {
+    pub fn matches(&self, mut s: &str, cache: &mut HashMap<Match, Option<regex::Regex>>) -> bool {
         match self.kind.as_str() {
-            "basename" => s.rsplit_once('/').map(|(_, r)| r).unwrap_or(s) == self.pattern,
+            "path" => {}
+            "basename" => s = s.rsplit_once('/').map(|(_, r)| r).unwrap_or(s),
+            _ => return false,
+        };
+
+        match self.method.as_str() {
+            "full" => s == self.pattern,
             "prefix" => s.strip_prefix(&self.pattern).is_some(),
+            "suffix" => s.strip_suffix(&self.pattern).is_some(),
             "substring" => s.contains(&self.pattern),
-            "dns" => self.pattern == s.trim_matches('.'),
-            _ => self.pattern == s,
+            "regex" => {
+                let re = cache
+                    .entry(self.clone())
+                    .or_insert_with(|| regex::Regex::new(&self.pattern).ok());
+                re.as_ref().is_some_and(|r| r.is_match(s))
+            }
+            _ => false,
         }
     }
 }

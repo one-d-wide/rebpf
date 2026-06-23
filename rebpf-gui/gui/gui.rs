@@ -9,7 +9,7 @@ use iced::{
     window,
 };
 use iced_aw::{DropDown, drop_down};
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::net::Ipv4Addr;
 
 use message::{Attached, D, M, Match, Settings, Stats, Tray, TrayState, TrayTheme, Tx};
@@ -33,15 +33,33 @@ const MONO_BOLD: Font = Font {
     ..Font::DEFAULT
 };
 
-pub const KINDS: [&str; 6] = [
-    "basename",
-    "substring",
-    "prefix",
-    "ipv4",
-    "ipv4/subnet",
-    "dns",
-];
-pub const KIND_DEFAULT: &str = KINDS[1];
+pub const KINDS: &[&str] = &["basename", "path", "ipv4", "dns"];
+pub const METHODS: &[&str] = &["full", "substring", "prefix", "suffix", "regex", "subnet"];
+pub const KIND_DEFAULT: &str = KINDS[0];
+pub const METHOD_DEFAULT: &str = "substring";
+
+fn default_method_for(kind: &str) -> &'static str {
+    match kind {
+        "ipv4" => "full",
+        _ => "substring",
+    }
+}
+
+fn methods_for(kind: &str) -> &'static [&'static str] {
+    match kind {
+        "basename" | "path" | "dns" => &["full", "substring", "prefix", "suffix", "regex"],
+        "ipv4" => &["full", "subnet"],
+        _ => &[],
+    }
+}
+
+fn method_or_unk(s: &str) -> &'static str {
+    METHODS.iter().cloned().find(|x| *x == s).unwrap_or("")
+}
+
+fn kind_or_unk(s: &str) -> &'static str {
+    KINDS.iter().cloned().find(|x| *x == s).unwrap_or("")
+}
 
 pub const THEME_DEFAULT: Theme = Theme::Dark;
 
@@ -78,13 +96,15 @@ pub struct State {
     pub proc_input_dir: &'static str,
     pub proc_input_default_dir: &'static str,
     pub proc_input_kind: &'static str,
+    pub proc_input_method: &'static str,
     pub proc_input_kind_after_refine: bool,
+    pub proc_input_method_after_refine: bool,
     pub attached: Attached,
     pub stats: Stats,
     pub matches: Vec<(Match, Id)>,
     pub matches_override: HashMap<usize, Match>,
     pub matches_gen: u64,
-    pub procs_active: HashSet<String>,
+    pub procs_active: HashMap<usize, BTreeSet<String>>,
     pub procs_all: Option<BTreeMap<String, u32>>,
     pub procs_all_max: usize,
     pub dbus_conn_err: Option<zbus::Error>,
@@ -92,13 +112,10 @@ pub struct State {
     pub modal_editor: Option<text_editor::Content>,
 }
 
-fn kind_or_unk(s: &str) -> &'static str {
-    KINDS.into_iter().find(|x| *x == s).unwrap_or(KIND_DEFAULT)
-}
-
 fn current_match(s: &State) -> Match {
     Match {
         kind: s.proc_input_kind.to_string(),
+        method: s.proc_input_method.to_string(),
         pattern: s.proc_input.clone(),
         direction: s.proc_input_dir.to_string(),
         ..Default::default()
@@ -108,8 +125,9 @@ fn current_match(s: &State) -> Match {
 fn refresh_procs_all(s: &mut State) {
     let m = current_match(s);
     s.procs_all_max = 10;
+    let mut cache = HashMap::new();
     s.procs_all = Some(utils::procs_all_with(
-        &mut |s| m.matches(s),
+        &mut |s| m.matches(s, &mut cache),
         s.procs_all_max,
     ));
 }
@@ -152,6 +170,7 @@ pub fn update(s: &mut State, message: M) -> Task<M> {
             s.window = Some(id);
             return task.map(|_| M::Nop);
         }
+        M::WindowToggle | M::WindowOpen | M::WindowCloseId(_) => {}
         M::SettingsOpen => s.show_settings = true,
         M::SettingsClose => {
             s.show_settings = false;
@@ -180,6 +199,7 @@ pub fn update(s: &mut State, message: M) -> Task<M> {
                 .unbounded_send(D::SettingsUpdate(s.settings.clone()))
                 .unwrap();
         }
+        M::SettingsSubmit => {}
         M::Settings(n) => {
             s.settings_override = n.clone();
             s.settings = n;
@@ -202,6 +222,7 @@ pub fn update(s: &mut State, message: M) -> Task<M> {
                 .unbounded_send(D::MatchDelete(m.clone()))
                 .unwrap();
         }
+        M::MatchDelete(_, _) => {}
         M::MatchKind(g, i, k) if g == s.matches_gen => {
             s.matches_override
                 .entry(i)
@@ -209,6 +230,15 @@ pub fn update(s: &mut State, message: M) -> Task<M> {
                 .kind = k.to_string();
             return update(s, M::MatchSubmit(g, i));
         }
+        M::MatchKind(_, _, _) => {}
+        M::MatchMethod(g, i, k) if g == s.matches_gen => {
+            s.matches_override
+                .entry(i)
+                .or_insert_with(|| s.matches[i].0.clone())
+                .method = k.to_string();
+            return update(s, M::MatchSubmit(g, i));
+        }
+        M::MatchMethod(_, _, _) => {}
         M::Enable => {
             s.d_tx.as_ref().unwrap().unbounded_send(D::Enable).unwrap();
         }
@@ -221,6 +251,7 @@ pub fn update(s: &mut State, message: M) -> Task<M> {
                 .or_insert_with(|| s.matches[i].0.clone())
                 .pattern = n;
         }
+        M::MatchUpdate(_, _, _) => {}
         M::MatchDir => {
             s.proc_input_dir = match s.proc_input_dir {
                 "redirect" => "bypass",
@@ -241,15 +272,22 @@ pub fn update(s: &mut State, message: M) -> Task<M> {
             .to_string();
             return update(s, M::MatchSubmit(g, i));
         }
+        M::MatchUpdateDir(_, _) => {}
         M::MatchFromProc(g, i) if g == s.matches_gen => {
             let (m, _) = s.procs_all.as_ref().unwrap().iter().nth(i).unwrap();
-            s.proc_input_kind = "basename";
+            s.proc_input_kind = KIND_DEFAULT;
+            s.proc_input_method = methods_for(KIND_DEFAULT)
+                .get(0)
+                .cloned()
+                .unwrap_or_default();
             s.proc_input = m.rsplit_once('/').map(|(_, r)| r).unwrap_or(m).to_string();
             s.proc_input_kind_after_refine = true;
+            s.proc_input_method_after_refine = true;
             refresh_procs_all(s);
             s.proc_popup_focus = false;
             s.proc_input_focus = false;
         }
+        M::MatchFromProc(_, _) => {}
         M::MatchSubmit(g, i) if g == s.matches_gen => {
             if let Some(m) = s.matches_override.remove(&i)
                 && m != s.matches[i].0
@@ -262,6 +300,7 @@ pub fn update(s: &mut State, message: M) -> Task<M> {
             }
             return iced::advanced::widget::operate(utils::DoUnfocus(s.matches[i].1.clone()));
         }
+        M::MatchSubmit(_, _) => {}
         M::Procs(n) => {
             s.proc_input_sent = false;
             s.proc_input = n;
@@ -270,6 +309,14 @@ pub fn update(s: &mut State, message: M) -> Task<M> {
             if s.proc_input_kind_after_refine {
                 s.proc_input_kind = KIND_DEFAULT;
                 s.proc_input_kind_after_refine = false;
+            }
+
+            if s.proc_input_method_after_refine {
+                s.proc_input_method = methods_for(KIND_DEFAULT)
+                    .get(0)
+                    .cloned()
+                    .unwrap_or_default();
+                s.proc_input_method_after_refine = false;
             }
 
             if !s.proc_input.is_empty() {
@@ -319,7 +366,7 @@ pub fn update(s: &mut State, message: M) -> Task<M> {
                 .as_ref()
                 .unwrap()
                 .unbounded_send(TrayState {
-                    state: if !s.attached.attached {
+                    state: if !s.attached.attached || !s.attached.blocker.is_empty() {
                         Tray::NotConnected
                     } else if s.attached.enabled {
                         Tray::Enabled
@@ -347,8 +394,16 @@ pub fn update(s: &mut State, message: M) -> Task<M> {
             s.matches_gen += 1;
         }
         M::Kind(n) => {
+            if methods_for(s.proc_input_kind) != methods_for(n) {
+                s.proc_input_method = default_method_for(&n);
+                s.proc_input_method_after_refine = false;
+            }
             s.proc_input_kind = n;
             s.proc_input_kind_after_refine = false;
+        }
+        M::Method(n) => {
+            s.proc_input_method = n;
+            s.proc_input_method_after_refine = false;
         }
         M::ProcPopupFocus => s.proc_popup_focus = true,
         M::ProcPopupUnfocus => s.proc_popup_focus = false,
@@ -426,7 +481,9 @@ pub fn update(s: &mut State, message: M) -> Task<M> {
                 t.perform(a);
             }
         }
-        _ => {}
+        M::ModalDismiss => {}
+        M::NopString(_) => {}
+        M::Nop => {}
     }
 
     Task::none()
@@ -455,8 +512,6 @@ pub fn view(s: &State, _window: window::Id) -> Element<'_, M> {
         };
         p
     };
-
-    let pick_width = 120;
 
     let output_dev = container_hook::Container::new(
         text_input(LOADING, &s.output_dev_input)
@@ -583,7 +638,12 @@ pub fn view(s: &State, _window: window::Id) -> Element<'_, M> {
             .padding([2, 14])
             .on_press(M::MatchAdd)
             .style(button_style),
-        pick_list(KINDS, Some(s.proc_input_kind), M::Kind).width(pick_width),
+        pick_list(KINDS, Some(s.proc_input_kind), M::Kind),
+        pick_list(
+            methods_for(s.proc_input_kind),
+            Some(method_or_unk(&s.proc_input_method)),
+            M::Method
+        ),
         tooltip(
             button(text(dir(s.proc_input_dir)).font(MONO))
                 .on_press(M::MatchDir)
@@ -657,7 +717,8 @@ pub fn view(s: &State, _window: window::Id) -> Element<'_, M> {
 
     let mut patterns = column!().spacing(S);
     for (i, (m, id)) in s.matches.iter().enumerate() {
-        let is_active = !overlay_active && s.proc_input.is_empty() && m.is_in(&s.procs_active);
+        let active = s.procs_active.get(&i);
+        let is_active = !overlay_active && s.proc_input.is_empty() && active.is_some();
         let m = s.matches_override.get(&i).unwrap_or(m);
         let g = s.matches_gen;
         let mut pattern = row![
@@ -671,8 +732,14 @@ pub fn view(s: &State, _window: window::Id) -> Element<'_, M> {
                         g, i, k
                     ))
                     .style(|t, _| pick_list::default(t, pick_list::Status::Active))
-                    .handle(Handle::None)
-                    .width(pick_width),
+                    .handle(Handle::None),
+                    pick_list(
+                        methods_for(&m.kind),
+                        Some(method_or_unk(&m.method)),
+                        move |k| { M::MatchMethod(g, i, k) }
+                    )
+                    .style(|t, _| pick_list::default(t, pick_list::Status::Active))
+                    .handle(Handle::None),
                     tooltip(
                         button(text(dir(&m.direction)).font(MONO))
                             .on_press(M::MatchUpdateDir(g, i))
@@ -697,10 +764,16 @@ pub fn view(s: &State, _window: window::Id) -> Element<'_, M> {
         .height(Shrink);
 
         if is_active {
+            let active = active.unwrap().iter().fold(String::new(), |mut a, x| {
+                a.push_str(" ");
+                a.push_str(x);
+                a
+            });
+
             pattern = pattern.push(
                 container(
                     float(
-                        text(&m.pattern)
+                        text(active)
                             .color(color!(0x24cc9e))
                             .wrapping(text::Wrapping::None)
                             .align_x(Horizontal::Right),

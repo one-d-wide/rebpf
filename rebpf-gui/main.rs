@@ -5,7 +5,7 @@ use iced::{
     window,
 };
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap},
     sync::Arc,
     time::Duration,
 };
@@ -90,6 +90,7 @@ fn main() -> iced::Result {
                             d_tx: Some(d_tx.clone()),
                             t_tx: Some(t_tx.clone()),
                             proc_input_kind: gui::KIND_DEFAULT,
+                            proc_input_method: gui::METHOD_DEFAULT,
                             proc_input_dir: "redirect",
                             proc_input_default_dir: "bypass",
                             ..Default::default()
@@ -193,26 +194,36 @@ async fn listen_proc_names(
     loop {
         let _guard = sema.acquire().await.unwrap();
 
-        let mut set = HashSet::new();
+        let mut set: HashMap<usize, BTreeSet<String>> = HashMap::new();
 
         if let Ok(records) = proxy.get_dns_records().await {
-            set.extend(records.into_iter().filter_map(|mut r| r.remove("name")));
+            for mut r in records {
+                if let Some(pat_id) = r.get("match-id")
+                    && let Ok(pat_id) = pat_id.parse()
+                    && let Some(name) = r.remove("name")
+                {
+                    set.entry(pat_id).or_default().insert(name);
+                }
+            }
         }
 
-        set.extend(
-            proxy
-                .get_proc_names()
-                .await?
-                .split('\n')
-                .filter(|s| !s.is_empty())
-                .map(|s| s.to_string()),
-        );
+        if let Ok(records) = proxy.get_proc_names().await {
+            for mut r in records {
+                if let Some(pat_id) = r.get("match-id")
+                    && let Ok(pat_id) = pat_id.parse()
+                    && let Some(name) = r.remove("basename")
+                {
+                    set.entry(pat_id).or_default().insert(name);
+                }
+            }
+        }
 
         m_tx.unbounded_send(M::ActiveProcs(set)).unwrap();
 
-        let h = proxy.get_stats().await?;
-        m_tx.unbounded_send(M::Stats(Stats::from_hashmap(h)))
-            .unwrap();
+        if let Ok(h) = proxy.get_stats().await {
+            m_tx.unbounded_send(M::Stats(Stats::from_hashmap(h)))
+                .unwrap();
+        }
 
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
@@ -261,18 +272,18 @@ async fn process_requests(
                 proxy.update_config(&h).await
             }
             D::MatchAdd(m) => {
-                let h = m.into_hashmap();
+                let h = m.to_hashmap();
                 log::debug!("{h:?}");
                 proxy.add_match(&h).await
             }
             D::MatchDelete(m) => {
-                let h = m.into_hashmap();
+                let h = m.to_hashmap();
                 log::debug!("{h:?}");
                 proxy.delete_match(&h).await
             }
             D::MatchUpdate(f, t) => {
-                let f = f.into_hashmap();
-                let t = t.into_hashmap();
+                let f = f.to_hashmap();
+                let t = t.to_hashmap();
                 log::debug!("{f:?}");
                 log::debug!("{t:?}");
                 proxy.update_match(&f, &t).await

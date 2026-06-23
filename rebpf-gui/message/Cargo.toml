@@ -9,3 +9,4 @@ path = "message.rs"
 iced.workspace = true
 tokio.workspace = true
 zbus.workspace = true
+regex.workspace = true

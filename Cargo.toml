@@ -32,3 +32,4 @@ argh = { version = "0", default-features = false, features = ["help" ] }
 rust-fuzzy-search = "0"
 log = "*"
 libc = "*"
+regex = "1"

@@ -50,7 +50,7 @@ pub trait Ser {
     fn get_stats(&self) -> zbus::Result<HashMap<String, String>>;
 
     /// GetProcNames method
-    fn get_proc_names(&self) -> zbus::Result<String>;
+    fn get_proc_names(&self) -> zbus::Result<Vec<HashMap<String, String>>>;
 
     fn get_dns_records(&self) -> zbus::Result<Vec<HashMap<String, String>>>;
 
