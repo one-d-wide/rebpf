@@ -15,6 +15,7 @@ cc = "1"
 
 [features]
 bpf-trace = []
+bpf-trace-time = []
 
 [dependencies]
 env_logger.workspace = true

@@ -14,9 +14,15 @@ fn main() {
         ""
     };
 
+    let bpf_trace_time = if cfg!(feature = "bpf-trace-time") {
+        "BPF_TRACE_TIME=1"
+    } else {
+        ""
+    };
+
     let out_dir = std::env::var("OUT_DIR").unwrap();
     run(format!(
-        "env {bpf_trace} NO_COMPILE_COMMANDS=1 REBPF_SRC=. bash ./build-loader.sh"
+        "env {bpf_trace} {bpf_trace_time} NO_COMPILE_COMMANDS=1 REBPF_SRC=. bash ./build-loader.sh"
     ));
 
     println!("cargo:rustc-link-arg={out_dir}/bpf-load.o");

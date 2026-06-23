@@ -1,5 +1,5 @@
-#ifndef BPF_UTILS_H
-#define BPF_UTILS_H
+#ifndef BPF_UTILS_C
+#define BPF_UTILS_C
 
 #include "vmlinux.h"
 
@@ -175,5 +175,40 @@ static int match_ctx_match(const MatchCtx *ctx, const Match *match) {
     return 0;
   }
 }
+
+#define _cleanup(f) __attribute__((cleanup(f)))
+
+typedef struct ScopeTime ScopeTime;
+struct ScopeTime {
+  u64 start;
+  const char *message;
+};
+
+[[maybe_unused]]
+static __always_inline ScopeTime scope_time__new(const char *msg) {
+  return (ScopeTime){
+      .start = bpf_ktime_get_ns(),
+      .message = msg,
+  };
+}
+
+[[maybe_unused]]
+static __always_inline void scope_time__report_ns(ScopeTime *t) {
+  u64 now = bpf_ktime_get_ns();
+  __bpf_vprintk("Done %s() in %u ns", t->message, now - t->start);
+}
+
+#define trace_time_init(msg) struct ScopeTime _st = scope_time__new(msg);
+
+#define trace_time_report() scope_time__report_ns(&_st);
+
+#define trace_time(_msg)                                                       \
+  struct ScopeTime _cleanup(scope_time__report_ns) _st = scope_time__new(_msg);
+
+#define trace_time_fn() trace_time(__FUNCTION__)
+
+#if !BPF_TRACE && !BPF_TRACE_TIME
+#define trace_time(_msg)
+#endif
 
 #endif
