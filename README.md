@@ -101,7 +101,7 @@ sweep existing sockets using [`iter/task_file`].
 [`cgroup/sock_create`]: https://docs.ebpf.io/linux/program-type/BPF_PROG_TYPE_CGROUP_SOCK
 [`iter/task_file`]: https://docs.ebpf.io/linux/program-type/BPF_PROG_TYPE_TRACING
 
-Once we have a socket, the most convenient method to redirect traffic is to
+Once we have a socket, the most convenient method to **redirect traffic** is to
 tell the existing kernel code to do it. A privileged userspace application can
 set an arbitrary 32bit [SO_MARK] on its sockets which in turn could be picked
 up by dedicated firewall and routing rules. In this case, stateful connection
@@ -120,7 +120,7 @@ to set a mark on an already existing socket.
 [bpf_setsockopt()]: https://docs.ebpf.io/linux/helper-function/bpf_setsockopt/
 [pidfd_getfd(2)]: https://www.man7.org/linux/man-pages/man2/pidfd_getfd.2.html
 
-The network configuration is dynamic. When a network device disappears, its
+The **network configuration** is dynamic. When a network device disappears, its
 routing entries are removed automatically and need to be reconfigured when the
 device reappears. Linux notifies userspace of the changes in network
 configuration using multicast netlink. The daemon listens to these changes to
@@ -129,13 +129,39 @@ allow LAN connectivity and has to actively mirror the state of the main routing
 table for selected processes.
 
 IP-based redirection is straightforward, the daemon simply creates the
-corresponding routing entries for them. Matching DNS addresses is more
+corresponding routing entries for them. **Matching DNS addresses** is more
 involved. When it's required, eBPF program checks ingress packets using
 [`tcx/ingress`] program and copies ones that look like originating from a DNS
 resolver into the userspace for processing. The daemon does the parsing and
 maintains the corresponding routing entries.
 
 [`tcx/ingress`]: https://docs.ebpf.io/linux/program-type/BPF_PROG_TYPE_SCHED_ACT
+
+Getting **regexes** to work was actually surprisingly simple. At it's core a
+[DFA] can be represented by a function like `(state_i, character_i) =>
+state_i+1`, called a transition function, and a handful of other parameters.
+Each transition consumes exactly one character, which makes it a simple enough
+algorithm to be digestible to the eBPF verifier.
+
+The caveat is the number of states could be exponential in some pathological
+cases, but that's the problem for the regex builder. Rebpf uses [regex-automata
+crate] for this purpose, paired with some code to extract the actual transition
+table and other info to run the DFA.
+
+A nice property of regexes is that an NFA (basically your regex grammar)
+doesn't care whether it's matched left-to-right or right-to-left, so it can
+match each path component separately when descending from a given file towards
+the filesystem root, simplifying the code a bit.
+
+Another helpful detail is that a DFA can be constructed from multiple patterns,
+effectively matching against all of them at once like an Aho-Corasick trie,
+meaning for Rebpf, it only has to keep a single DFA around and run it once on a
+given path to attribute it to the original match, which can be deduced from the
+last visited state. Other kinds of matches: basenames, substrings, etc are all
+reduced to matching a regex pattern.
+
+[DFA]: https://en.wikipedia.org/wiki/Deterministic_finite_automaton
+[regex-automata crate]: https://docs.rs/regex-automata/latest/regex_automata/
 
 </details>
 
