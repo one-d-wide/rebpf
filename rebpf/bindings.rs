@@ -331,13 +331,16 @@ const _: () = {
     ["Offset of field: Dump::task_len"][::std::mem::offset_of!(Dump, task_len) - 17408usize];
 };
 unsafe extern "C" {
-    pub fn bpf_drop_caps();
+    pub fn bpf_drop_caps(uid: u32_, gid: u32_);
 }
 unsafe extern "C" {
     pub fn bpf_init();
 }
 unsafe extern "C" {
     pub fn bpf_reload_config(conf: *mut BpfConfig) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn bpf_refresh_sockets(mark: u32_);
 }
 unsafe extern "C" {
     pub fn bpf_get_proc_names(

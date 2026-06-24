@@ -274,7 +274,6 @@ to_from_hashmap! {
         => kind: Kind,
         => method: Method,
         => direction: Direction,
-        user: String,
         => => uid: u32,
     }
 }
@@ -299,7 +298,6 @@ impl Match {
             && self.pattern == r.pattern
             && self.direction == r.direction
             && self.uid == r.uid
-            && self.user == r.user
     }
 }
 
@@ -358,7 +356,7 @@ impl Matches {
             Method::substring => format!("[^/]*{}.*", escape(pat)),
             Method::prefix => format!("{}.*", escape(pat)),
             Method::suffix => format!("[^/]*{}", escape(pat)),
-            Method::regex => format!("{}", pat),
+            Method::regex => format!("(?:{})", pat),
             Method::subnet => return None,
         };
         Some(method)

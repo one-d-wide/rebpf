@@ -140,18 +140,32 @@ const char *proc_set_mark(pid_t pid, u64 start_time, int fd, u32 fwmark) {
   return NULL;
 }
 
-void bpf_drop_caps() {
+void bpf_drop_caps(u32 uid, u32 gid) {
+  prctl(PR_SET_KEEPCAPS, 1, 0, 0, 0);
+
   if (getuid() == 0) {
-    uid_t nobody = 65534;
-    EXPECT0(setresgid(nobody, nobody, nobody));
-    EXPECT0(setresuid(nobody, nobody, nobody));
+    if (uid == 0) {
+      uid = 65534; // nobody
+    }
+    if (gid == 0) {
+      gid = 65534; // nobody
+    }
+    EXPECT0(setresgid(gid, gid, gid));
+    EXPECT0(setresuid(uid, uid, uid));
     EXPECT(getuid() != 0 && geteuid() != 0);
   }
 
   cap_t caps = cap_get_proc();
   cap_clear(caps);
+
+  cap_value_t keep_caps[] = {CAP_NET_ADMIN};
+  cap_set_flag(caps, CAP_EFFECTIVE, 1, keep_caps, CAP_SET);
+  cap_set_flag(caps, CAP_PERMITTED, 1, keep_caps, CAP_SET);
+
   EXPECT0(cap_set_proc(caps));
   cap_free(caps);
+
+  EXPECT0(prctl(PR_SET_KEEPCAPS, 0, 0, 0, 0));
   EXPECT0(prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0));
 }
 
@@ -233,32 +247,30 @@ int bpf_reload_config(BpfConfig *conf) {
     memcpy(skel->bss->BASE, conf->arena_buf, conf->arena_buf_len);
   }
 
+  return 0;
+}
+
+void bpf_refresh_sockets(u32 mark) {
   int iter_fd _cleanup(closep) = -1;
   EXPECT((iter_fd = bpf_iter_create(links.iter_file_fd)) >= 0);
 
-  int err;
-  while (true) {
-    struct ProcFdEntry buf[64];
-    while ((err = read(iter_fd, buf, sizeof(buf))) == -1 && errno == EAGAIN)
-      ;
-
-    if (err <= 0) {
-      break;
+  ssize_t res;
+  struct ProcFdEntry buf[64];
+  while ((res = read(iter_fd, buf, sizeof(buf)))) {
+    if (res < 0 && (errno == EINTR || errno == EAGAIN)) {
+      continue;
     }
+    EXPECT(res > 0);
 
-    for (size_t i = 0; i < err / sizeof(*buf); ++i) {
+    for (size_t i = 0; i < res / sizeof(*buf); ++i) {
       struct ProcFdEntry *ent = &buf[i];
       const char *err = proc_set_mark(
-          ent->pid, ent->start_boottime / NS_PER_SEC, ent->fd, conf->mark);
+          ent->pid, ent->start_boottime / NS_PER_SEC, ent->fd, mark);
       if (err) {
         ERROR("Setting fwmark on pid=%i fd=%i: %s", ent->pid, ent->fd, err);
       }
     }
   }
-
-  EXPECT(err == 0);
-
-  return 0;
 }
 
 void bpf_get_proc_names(char **ptr, u64 *len, u64 *cap) {

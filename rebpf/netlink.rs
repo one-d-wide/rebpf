@@ -10,7 +10,11 @@ use netlink_bindings::{
 };
 use netlink_socket2::{MulticastSocketRaw, NetlinkSocket, ReplyError};
 use std::{ffi, io, marker::PhantomData, net::Ipv4Addr};
-use tokio::time::Instant;
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::UnixStream,
+    time::Instant,
+};
 
 use crate::dbus;
 use rebpf::{BpfCtx, Ctx, Direction, Kind, Method, Route, State, Stats, StatsHist, bpf};
@@ -19,7 +23,7 @@ pub fn rand_table() -> u32 {
     rand::random_range(u16::MAX as u32..u32::MAX)
 }
 
-pub async fn watch_reload(ctx: &'static Ctx) -> eyre::Result<()> {
+pub async fn watch_reload(ctx: &'static Ctx, mut refresh_tx: UnixStream) -> eyre::Result<()> {
     let mut sock = NetlinkSocket::new();
     let mut sock2 = NetlinkSocket::new();
     let mut conf = ctx.state.rx.clone();
@@ -224,6 +228,9 @@ pub async fn watch_reload(ctx: &'static Ctx) -> eyre::Result<()> {
             let conf = conf.borrow();
             bpf_reload(&mut bpf, &conf, enable, new_mark);
         }
+        let mut buf = [0u8; 4];
+        refresh_tx.write_all(&new_mark.to_ne_bytes()).await?;
+        refresh_tx.read_exact(&mut buf[..]).await?;
 
         ctx.attached.tx.send(true).unwrap();
         ctx.blocker.tx.send(blocker).unwrap();
