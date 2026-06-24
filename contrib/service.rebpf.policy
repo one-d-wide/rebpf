@@ -5,6 +5,7 @@
   <vendor_url>https://github.com/one-d-wide/rebpf/</vendor_url>
   <icon_name>rebpf-on</icon_name>
   <action id="service.rebpf.modify.system">
+    <annotate key="org.freedesktop.policykit.owner">unix-user:rebpf</annotate>
     <description>Modify rebpf configuration for all users</description>
     <message>System policy prevents modification of rebpf configuration for all users</message>
     <defaults>

@@ -180,6 +180,7 @@ Rebpf requires Linux kernel v7.0 or later.
   install -m 0644 -Dt /etc/dbus-1/system.d/ ./contrib/service.rebpf.conf
   install -m 0644 -Dt /usr/share/polkit-1/actions/ ./contrib/service.rebpf.policy
   install -m 0644 -Dt /etc/systemd/system ./contrib/rebpf.service
+  # Optional: create a user account for Rebpf, so it doesn't stay on D-Bus as root, see ./module.nix
 
   # Rebpf-gui
   install -m 0755 -Dt /usr/bin ./target/release/rebpf-gui

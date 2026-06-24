@@ -15,6 +15,12 @@ in
       package = lib.mkPackageOption {
         rebpf = import ./rebpf/default.nix { inherit pkgs; };
       } "rebpf" { };
+      user = lib.mkOption {
+        type = lib.types.str;
+        default = "rebpf";
+        # Username is hard-coded in ./contrib/service.rebpf.conf and ./contrib/service.rebpf.policy
+        readOnly = true;
+      };
     };
 
     programs.rebpf-gui = {
@@ -31,13 +37,21 @@ in
 
     services.dbus.packages = lib.optional cfg.enable cfg.package; # dbus policy
 
+    # D-Bus policies don't work with systemd's DynamicUser=true
+    users.groups.${cfg.user} = { };
+    users.users.${cfg.user} = {
+      group = cfg.user;
+      isSystemUser = true;
+    };
+
     systemd.services = lib.mkIf cfg.enable {
       rebpf = {
         after = [ "network.target" ];
         wantedBy = [ "network.target" ];
         serviceConfig = {
           BusName = "service.rebpf";
-          ExecStart = "${lib.getExe cfg.package}";
+          StateDirectory = "rebpf";
+          ExecStart = "${lib.getExe cfg.package} --dbus-user ${lib.escapeShellArg cfg.user}";
         };
       };
     };
